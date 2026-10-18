@@ -3,10 +3,7 @@ bin/
 __pycache__/
 *.pyc
 *.part
-user_data/.env.local
-user_data/models/whisper/*
+user_data/*
 !user_data/models/whisper/README.txt
-user_data/models/piper/*
 !user_data/models/piper/README.txt
-user_data/chat/*
 !user_data/chat/.gitkeep

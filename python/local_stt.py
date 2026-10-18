@@ -69,10 +69,12 @@ def create_stt(
     compute_type: str = "auto",
     language: str = "en",
     beam_size: int = 1,
-    vad_filter: bool = False,
+    vad_filter: bool = True,
     temperature: float = 0.0,
     min_logprob: float = -1.0,
     max_compratio: float = 2.4,
+    initial_prompt: str = "",
+    no_speech: float = 0.6,
 ):
     from livekit.agents import stt as lk_stt
     from faster_whisper import WhisperModel
@@ -82,6 +84,13 @@ def create_stt(
             super().__init__(
                 capabilities=lk_stt.STTCapabilities(streaming=False, interim_results=False)
             )
+            # Accuracy notes:
+            # - condition_on_previous_text=False stops hallucination carry-over
+            #   between short utterances (the #1 cause of ghost words).
+            # - vad_filter=True trims leading/trailing non-speech noise, so
+            #   breaths/clicks no longer become phantom words like "Thank you.".
+            # - an explicit language beats auto-detect on short clips; pass
+            #   WHISPER_INITIAL_PROMPT to bias names/jargon your mic hears often.
             self._decode = dict(
                 language=None if language in ("auto", "") else language,
                 beam_size=beam_size,
@@ -89,8 +98,11 @@ def create_stt(
                 temperature=temperature,
                 log_prob_threshold=min_logprob,
                 compression_ratio_threshold=max_compratio,
+                no_speech_threshold=no_speech,
                 condition_on_previous_text=False,
             )
+            if initial_prompt and initial_prompt.strip():
+                self._decode["initial_prompt"] = initial_prompt.strip()
 
         async def _recognize_impl(self, buffer, *, language=None, conn_options=None):
             t0 = time.time()
@@ -146,8 +158,10 @@ def create_stt(
     _warmup(wm, model)
     logger.info(
         "STT decode: beam=%s temperature=%s (single pass), logprob floor %s, "
-        "compression-ratio ceiling %s, vad_filter=%s",
-        beam_size, temperature, min_logprob, max_compratio, vad_filter,
+        "compression-ratio ceiling %s, no-speech floor %s, vad_filter=%s, "
+        "language=%s, initial_prompt=%s",
+        beam_size, temperature, min_logprob, max_compratio, no_speech,
+        vad_filter, language or "auto", "yes" if initial_prompt else "no",
     )
 
     stt_obj = BatchWhisperSTT()

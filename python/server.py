@@ -3,6 +3,13 @@
 Runs the LiveKit server and the voice agent as children (killed together via
 a Windows Job Object), serves python/web/index.html and the config/model/chat
 history API on http://127.0.0.1:8090.
+
+Extras:
+- Remembers the app window's last position/size/mode (user_data/window_state.json)
+  and restores it on the next start (Chrome/Edge app mode + Win32 tracking).
+- Shuts everything down when the UI window is closed: the page sends a
+  heartbeat, and the app-mode browser process is watched as well
+  (CLOSE_WITH_WINDOW=1, set 0 in user_data/.env.local to disable).
 """
 import asyncio
 import ctypes
@@ -21,6 +28,9 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 
+if os.name == "nt":
+    import ctypes.wintypes
+
 from aiohttp import web
 from dotenv import load_dotenv
 from livekit import api as lk_api
@@ -32,6 +42,65 @@ CHAT_DIR = ROOT / "user_data" / "chat"
 LIVEKIT_YAML = ROOT / "user_data" / "livekit.yaml"
 LIVEKIT_EXE = ROOT / "bin" / ("livekit-server.exe" if os.name == "nt" else "livekit-server")
 AGENT_SCRIPT = Path(__file__).resolve().parent / "agent.py"
+WINDOW_STATE_FILE = ROOT / "user_data" / "window_state.json"
+
+# --- UI-window lifecycle (heartbeat + close detection) -----------------------
+HB_INTERVAL = 2.5        # the page beats every 2.5 s while visible
+HB_GAP_SHUTDOWN = 600.0  # last-resort net: minutes of total silence (minimized
+                         # pages can be timer-throttled/frozen by Chromium)
+HB_GAP_PENDING = 6.0     # after a pagehide beacon: a REAL close fires it; a
+                         # refresh re-beats within ~1.5 s and cancels it
+_SHUT_LOCK = threading.Lock()
+_SHUTTING = False
+_LAST_BEAT = 0.0         # time.monotonic() of the last /api/heartbeat
+_CLOSE_PENDING_AT = 0.0  # time.monotonic() of the last /api/window/closing
+_WIN_MINIMIZED = False   # tracked app window is minimized (beats may pause)
+
+
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+def heartbeat_fresh(window: float = 3.0) -> bool:
+    return _LAST_BEAT > 0 and (_monotonic() - _LAST_BEAT) <= window
+
+
+def request_shutdown(reason: str) -> None:
+    """Stop the children and exit this supervisor (closing the console too)."""
+    global _SHUTTING
+    if setting("CLOSE_WITH_WINDOW", "1") != "1":
+        return
+    if heartbeat_fresh():
+        # Another UI page (a second window/tab) is still alive - keep running.
+        log(f"window closed, but the UI is still sending heartbeats - staying up ({reason})")
+        return
+    with _SHUT_LOCK:
+        if _SHUTTING:
+            return
+        _SHUTTING = True
+    log(f"UI window closed ({reason}) - shutting down LiveKit + agent, bye!")
+    try:
+        stop_children()
+    except Exception:
+        pass
+    os._exit(0)
+
+
+def heartbeat_watcher() -> None:
+    """Exit when the UI page goes quiet: fast path after a pagehide beacon
+    (a real window close), slow backstop for everything else."""
+    global _WIN_MINIMIZED
+    while True:
+        time.sleep(2.0)
+        if _LAST_BEAT <= 0:
+            continue  # nothing has opened the UI yet - nothing to watch
+        if _WIN_MINIMIZED:
+            continue  # tracked window is minimized - Chromium may freeze its timers
+        gap = _monotonic() - _LAST_BEAT
+        pending_recent = _CLOSE_PENDING_AT > 0 and (_monotonic() - _CLOSE_PENDING_AT) < 60
+        threshold = HB_GAP_PENDING if pending_recent else HB_GAP_SHUTDOWN
+        if gap >= threshold:
+            request_shutdown(f"no UI heartbeat for {gap:.0f}s")
 
 
 def venv_python() -> Path:
@@ -439,10 +508,24 @@ async def api_chat_sessions(_request: web.Request) -> web.Response:
 
 
 async def api_chat_session(request: web.Request) -> web.Response:
+    # ?file=<name>.jsonl  OR  ?room=<room> (picks that room's newest log).
+    # System markers (session-start dividers) are passed through so the UI can
+    # show where one sitting ended and the next began.
     name = request.query.get("file", "")
-    if not re.fullmatch(r"[\w.-]+\.jsonl", name or ""):
-        return web.json_response({"error": "bad file name"}, status=400)
-    f = CHAT_DIR / name
+    room = request.query.get("room", "")
+    f = None
+    if room:
+        if not re.fullmatch(r"[\w-]{1,64}", room or ""):
+            return web.json_response({"error": "bad room name"}, status=400)
+        cands = sorted(CHAT_DIR.glob(f"*-{room}.jsonl"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        f = cands[0] if cands else None
+        if f is None:
+            return web.json_response({"file": "", "messages": []})
+    else:
+        if not re.fullmatch(r"[\w.-]+\.jsonl", name or ""):
+            return web.json_response({"error": "bad file name"}, status=400)
+        f = CHAT_DIR / name
     if not f.is_file():
         return web.json_response({"error": "not found"}, status=404)
     msgs = []
@@ -453,14 +536,20 @@ async def api_chat_session(request: web.Request) -> web.Response:
                     rec = json.loads(line)
                 except ValueError:
                     continue
-                if rec.get("who") in ("user", "bot") and rec.get("text"):
+                who = rec.get("who")
+                if who in ("user", "bot") and rec.get("text"):
                     msgs.append({
-                        "who": rec["who"], "text": rec["text"],
+                        "who": who, "text": rec["text"],
                         "ts": rec.get("ts", ""), "id": rec.get("id", ""),
+                    })
+                elif who == "system":
+                    msgs.append({
+                        "who": "system", "text": rec.get("text", ""),
+                        "ts": rec.get("ts", ""), "id": "",
                     })
     except OSError as exc:
         return web.json_response({"error": str(exc)}, status=500)
-    return web.json_response({"file": name, "messages": msgs})
+    return web.json_response({"file": f.name, "messages": msgs})
 
 
 async def api_chat_clear(request: web.Request) -> web.Response:
@@ -513,8 +602,11 @@ async def api_config_post(request: web.Request) -> web.Response:
         "WHISPER_MODEL", "WHISPER_DEVICE", "WHISPER_COMPUTE", "WHISPER_LANGUAGE",
         "WHISPER_BEAM", "WHISPER_VAD_FILTER", "WHISPER_TEMPERATURE",
         "WHISPER_MIN_LOGPROB", "WHISPER_MAX_COMPRATIO",
+        "WHISPER_INITIAL_PROMPT",
+        "CAP_ECHO_CANCEL", "CAP_NOISE_SUPPRESS", "CAP_AUTO_GAIN",
         "TTS_VOICE", "TTS_SPEED", "VAD_MIN_SILENCE", "VAD_ACTIVATION_THRESHOLD",
         "ENDPOINTING_DELAY", "ECHO_GUARD", "ECHO_GUARD_TAIL", "LOG_LEVEL",
+        "AUTO_OPEN", "UI_WINDOW", "CLOSE_WITH_WINDOW",
     }
     for k, v in updates.items():
         if k not in allowed or not isinstance(v, str):
@@ -533,6 +625,19 @@ async def api_config_post(request: web.Request) -> web.Response:
                                  status=500)
     log("config saved (applies to the next conversation)")
     return web.json_response({"ok": True, "config": current})
+
+
+async def api_heartbeat(_request: web.Request) -> web.Response:
+    global _LAST_BEAT, _CLOSE_PENDING_AT
+    _LAST_BEAT = _monotonic()
+    _CLOSE_PENDING_AT = 0.0  # a fresh beat means the page did NOT close
+    return web.Response(status=204)
+
+
+async def api_window_closing(_request: web.Request) -> web.Response:
+    global _CLOSE_PENDING_AT
+    _CLOSE_PENDING_AT = _monotonic()
+    return web.Response(status=204)
 
 
 async def api_models_stt(_request: web.Request) -> web.Response:
@@ -644,11 +749,18 @@ async def favicon(_request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
-async def token(_request: web.Request) -> web.Response:
-    identity = (_request.query.get("identity") or f"user-{os.urandom(2).hex()}").strip()
+async def token(request: web.Request) -> web.Response:
+    identity = (request.query.get("identity") or f"user-{os.urandom(2).hex()}").strip()
     if not re.fullmatch(r"[\w-]{1,64}", identity):
         return web.json_response({"error": "bad identity"}, status=400)
-    room = f"voice-{os.urandom(4).hex()}"
+    # The UI re-asks for ITS room (localStorage) so conversations continue in
+    # the same chat log across reloads and app restarts. No param = new room.
+    room = (request.query.get("room") or "").strip()
+    if room:
+        if not re.fullmatch(r"[\w-]{1,64}", room):
+            return web.json_response({"error": "bad room name"}, status=400)
+    else:
+        room = f"voice-{os.urandom(4).hex()}"
     key = setting("LIVEKIT_API_KEY", "devkey")
     secret = setting("LIVEKIT_API_SECRET", "")
     if not key or not secret:
@@ -669,6 +781,7 @@ async def token(_request: web.Request) -> web.Response:
 
 @web.middleware
 async def log_and_nocache(request: web.Request, handler):
+    status = 500
     try:
         resp = await handler(request)
         status = resp.status
@@ -676,7 +789,9 @@ async def log_and_nocache(request: web.Request, handler):
         status = e.status
         raise
     finally:
-        log(f"{request.method} {request.path_qs} -> {status}")
+        # Heartbeats arrive every ~2.5 s - logging them would drown the console.
+        if request.path not in ("/api/heartbeat", "/api/window/closing"):
+            log(f"{request.method} {request.path_qs} -> {status}")
         try:
             resp.headers["Cache-Control"] = "no-store"
         except UnboundLocalError:
@@ -719,6 +834,187 @@ def find_app_browser():
     return None
 
 
+# --- Window state: remember position/size/mode -------------------------------
+
+
+def load_window_state() -> dict:
+    try:
+        with open(WINDOW_STATE_FILE, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        if isinstance(st, dict):
+            return st
+    except Exception:
+        pass
+    return {}
+
+
+def save_window_state(st: dict) -> None:
+    try:
+        WINDOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = WINDOW_STATE_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(st), encoding="utf-8")
+        os.replace(tmp, WINDOW_STATE_FILE)
+    except Exception as exc:
+        log(f"could not save window state: {exc}")
+
+
+if os.name == "nt":
+    class _RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+    class _MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.wintypes.DWORD),
+                    ("rcMonitor", _RECT), ("rcWork", _RECT),
+                    ("dwFlags", ctypes.wintypes.DWORD)]
+
+_WINDOW_TITLE = "Local Voice Assistant"
+
+
+def _win32():
+    if os.name != "nt":
+        return None
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    u.IsWindow.argtypes = [ctypes.wintypes.HWND]
+    u.IsWindow.restype = ctypes.c_bool
+    u.IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
+    u.IsWindowVisible.restype = ctypes.c_bool
+    u.IsZoomed.argtypes = [ctypes.wintypes.HWND]
+    u.IsZoomed.restype = ctypes.c_bool
+    u.IsIconic.argtypes = [ctypes.wintypes.HWND]
+    u.IsIconic.restype = ctypes.c_bool
+    u.GetWindowTextLengthW.argtypes = [ctypes.wintypes.HWND]
+    u.GetWindowTextLengthW.restype = ctypes.c_int
+    u.GetWindowTextW.argtypes = [ctypes.wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+    u.GetWindowRect.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(_RECT)]
+    u.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    u.GetWindow.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
+    u.GetWindow.restype = ctypes.wintypes.HWND
+    u.MonitorFromWindow.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.DWORD]
+    u.MonitorFromWindow.restype = ctypes.wintypes.HMONITOR
+    u.GetMonitorInfoW.argtypes = [ctypes.wintypes.HMONITOR, ctypes.POINTER(_MONITORINFO)]
+    u.ShowWindow.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+    try:
+        u.GetDpiForWindow.restype = ctypes.c_uint
+        u.GetDpiForWindow.argtypes = [ctypes.wintypes.HWND]
+    except AttributeError:
+        pass
+    return u
+
+
+def _window_title(u, hwnd) -> str:
+    n = u.GetWindowTextLengthW(hwnd)
+    if n <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(n + 1)
+    u.GetWindowTextW(hwnd, buf, n + 1)
+    return buf.value or ""
+
+
+def _find_ui_window(u, pid: int, deadline: float):
+    """Find the app window: first by browser pid, then by exact page title
+    (covers Edge/Chrome delegating the launch to an existing instance)."""
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+    u.EnumWindows.argtypes = [WNDENUMPROC, ctypes.wintypes.LPARAM]
+    while _monotonic() < deadline:
+        by_pid, by_title = [], []
+
+        def _cb(hwnd, _lparam, _by_pid=by_pid, _by_title=by_title):
+            try:
+                if not u.IsWindowVisible(hwnd):
+                    return True
+                wpid = ctypes.wintypes.DWORD(0)
+                u.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+                title = _window_title(u, hwnd)
+                if not title or u.GetWindow(hwnd, 4):  # GW_OWNER: skip owned popups
+                    return True
+                if pid and wpid.value == pid:
+                    _by_pid.append((hwnd, title))
+                if title == _WINDOW_TITLE:
+                    _by_title.append(hwnd)
+            except Exception:
+                pass
+            return True
+
+        cb = WNDENUMPROC(_cb)
+        u.EnumWindows(cb, 0)
+        if by_pid:
+            return by_pid[0][0], True
+        if by_title:
+            return by_title[0], False
+        time.sleep(0.5)
+    return None, False
+
+
+def _sample_window(u, hwnd) -> dict:
+    rc = _RECT()
+    if not u.GetWindowRect(hwnd, ctypes.byref(rc)):
+        return {}
+    zoomed = bool(u.IsZoomed(hwnd))
+    fullscreen = False
+    try:
+        mi = _MONITORINFO()
+        mi.cbSize = ctypes.sizeof(_MONITORINFO)
+        if u.GetMonitorInfoW(u.MonitorFromWindow(hwnd, 2), ctypes.byref(mi)):
+            m = mi.rcMonitor
+            tol = 8
+            fullscreen = (abs(rc.left - m.left) <= tol and abs(rc.top - m.top) <= tol
+                          and abs(rc.right - m.right) <= tol and abs(rc.bottom - m.bottom) <= tol)
+    except Exception:
+        pass
+    try:
+        dpi = u.GetDpiForWindow(hwnd) or 96
+    except Exception:
+        dpi = 96
+    mode = "fullscreen" if fullscreen else ("maximized" if zoomed else "windowed")
+    return {"mode": mode, "x": int(rc.left), "y": int(rc.top),
+            "w": int(rc.right - rc.left), "h": int(rc.bottom - rc.top),
+            "dpi": int(dpi)}
+
+
+def track_window(proc, saved_mode: str) -> None:
+    """Follow the app window: restore its last mode, keep window_state.json
+    fresh, and shut everything down when the window/process disappears."""
+    global _WIN_MINIMIZED
+    u = _win32()
+    if u is None:
+        return
+    pid = proc.pid if hasattr(proc, "pid") else 0
+    hwnd, owned = _find_ui_window(u, pid, _monotonic() + 15)
+    if not hwnd:
+        # Delegated to an already-running browser instance (our launcher process
+        # exits immediately) - the heartbeat watcher covers the close case.
+        log("could not track the app window (browser reused?) - heartbeat close-detection only")
+        return
+    if saved_mode in ("maximized", "fullscreen") and not u.IsZoomed(hwnd):
+        u.ShowWindow(hwnd, 3)  # SW_MAXIMIZE - some Chromium builds ignore the flag
+    log("app window tracked - window position/size/mode will be remembered")
+    last = None
+    try:
+        while True:
+            time.sleep(3.0)
+            if proc.poll() is not None:
+                time.sleep(1.5)
+                request_shutdown("app window closed (browser process exited)")
+                return
+            if not u.IsWindow(hwnd):
+                time.sleep(1.5)
+                request_shutdown("app window closed")
+                return
+            _WIN_MINIMIZED = bool(u.IsIconic(hwnd))
+            if _WIN_MINIMIZED:
+                continue  # minimized - keep the last sane geometry, beats may pause
+            try:
+                st = _sample_window(u, hwnd)
+            except Exception:
+                continue
+            if st and st != last:
+                save_window_state(st)
+                last = st
+    finally:
+        _WIN_MINIMIZED = False
+
+
 def open_ui_when_ready() -> None:
     url = f"http://{HOST}:{PORT}/"
     deadline = time.time() + 20
@@ -734,16 +1030,42 @@ def open_ui_when_ready() -> None:
         exe = find_app_browser()
         if exe is not None:
             try:
-                args = [str(exe), f"--app={url}", "--window-size=1240,860"]
-                if os.name == "nt":
-                    subprocess.Popen(args, close_fds=True,
-                                     creationflags=0x08000000)  # CREATE_NO_WINDOW
+                st = load_window_state()
+                mode = str(st.get("mode") or "windowed")
+                args = [str(exe), f"--app={url}"]
+                if mode == "maximized":
+                    args.append("--start-maximized")
+                elif mode == "fullscreen":
+                    args.append("--start-fullscreen")
                 else:
-                    subprocess.Popen(args, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL,
-                                     start_new_session=True)
-                log(f"opened standalone app window via {exe.name} at {url}")
+                    mode = "windowed"
+                    w, h = int(st.get("w") or 0), int(st.get("h") or 0)
+                    x, y = int(st.get("x") or 0), int(st.get("y") or 0)
+                    dpi = int(st.get("dpi") or 96) or 96
+                    if 400 <= w <= 12000 and 300 <= h <= 8000:
+                        # Win32 reports physical px; Chromium flags want DIPs.
+                        scale = 96.0 / dpi
+                        args.append(f"--window-size={round(w * scale)},{round(h * scale)}")
+                        if -w + 100 <= x <= 20000 and -40 <= y <= 20000:
+                            args.append(f"--window-position={round(x * scale)},{round(y * scale)}")
+                    else:
+                        args.append("--window-size=1240,860")
+                if os.name == "nt":
+                    proc = subprocess.Popen(args, close_fds=True,
+                                            creationflags=0x08000000)  # CREATE_NO_WINDOW
+                else:
+                    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL,
+                                            start_new_session=True)
+                log(f"opened standalone app window via {exe.name} at {url} "
+                    f"(mode: {mode})")
+                if mode == "windowed" and len(args) == 3:
+                    log("(first run - default size; the window you arrange is "
+                        "remembered for next time)")
                 log("(set UI_WINDOW=0 to use a normal browser tab instead)")
+                if os.name == "nt":
+                    threading.Thread(target=track_window, args=(proc, mode),
+                                     daemon=True, name="win-track").start()
                 return
             except Exception as exc:
                 log(f"could not launch the app window ({exc}) - using the browser")
@@ -759,6 +1081,27 @@ def open_ui_when_ready() -> None:
         log(f"opened {url} in your browser (set AUTO_OPEN=0 to disable)")
     except Exception as exc:
         log(f"could not auto-open browser ({exc}) - open {url} manually")
+
+
+def build_app() -> web.Application:
+    app = web.Application(middlewares=[log_and_nocache])
+    app.router.add_get("/", index)
+    app.router.add_get("/livekit-client.js", lib)
+    app.router.add_static("/static/", path=str(WEB_DIR))
+    app.router.add_get("/health", health)
+    app.router.add_get("/token", token)
+    app.router.add_get("/api/config", api_config_get)
+    app.router.add_post("/api/config", api_config_post)
+    app.router.add_get("/api/models/stt", api_models_stt)
+    app.router.add_get("/api/models/tts", api_models_tts)
+    app.router.add_post("/api/llm/models", api_llm_models)
+    app.router.add_get("/api/chat/sessions", api_chat_sessions)
+    app.router.add_get("/api/chat/session", api_chat_session)
+    app.router.add_post("/api/chat/clear", api_chat_clear)
+    app.router.add_post("/api/heartbeat", api_heartbeat)
+    app.router.add_post("/api/window/closing", api_window_closing)
+    app.router.add_get("/favicon.ico", favicon)
+    return app
 
 
 def main() -> None:
@@ -789,24 +1132,16 @@ def main() -> None:
         log(f"startup banner check failed ({exc}) - continuing")
 
     log("dispatch: automatic - the agent worker joins every room (no yaml or token setup)")
+    if setting("CLOSE_WITH_WINDOW", "1") == "1":
+        log("window close    : closing the app window (or its tab) stops everything too")
+        log("                  (set CLOSE_WITH_WINDOW=0 in user_data/.env.local to disable)")
     if setting("AUTO_OPEN", "1") == "1":
         threading.Thread(target=open_ui_when_ready, daemon=True,
                          name="ui-open").start()
+    threading.Thread(target=heartbeat_watcher, daemon=True,
+                     name="hb-watch").start()
 
-    app = web.Application(middlewares=[log_and_nocache])
-    app.router.add_get("/", index)
-    app.router.add_get("/livekit-client.js", lib)
-    app.router.add_get("/health", health)
-    app.router.add_get("/token", token)
-    app.router.add_get("/api/config", api_config_get)
-    app.router.add_post("/api/config", api_config_post)
-    app.router.add_get("/api/models/stt", api_models_stt)
-    app.router.add_get("/api/models/tts", api_models_tts)
-    app.router.add_post("/api/llm/models", api_llm_models)
-    app.router.add_get("/api/chat/sessions", api_chat_sessions)
-    app.router.add_get("/api/chat/session", api_chat_session)
-    app.router.add_post("/api/chat/clear", api_chat_clear)
-    app.router.add_get("/favicon.ico", favicon)
+    app = build_app()
     try:
         web.run_app(app, host=HOST, port=PORT, print=None)
     except KeyboardInterrupt:

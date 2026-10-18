@@ -127,13 +127,16 @@ Enter the API key for that provider and a real model name. **The model picker** 
 ## 6. Using the web page
 
 - **Standalone window**: on start the UI opens as its **own desktop window** (no browser tabs or address bar) via Chrome or Edge app mode. Prefer a normal browser tab? Set `UI_WINDOW=0` in `user_data/.env.local`, or turn off all auto-opening with `AUTO_OPEN=0`.
+- **The app window is remembered**: position, size, and whether it was windowed, maximized, or fullscreen are saved to `user_data/window_state.json` and restored on the next start. Arrange the window once — every future launch comes back the way you left it.
+- **Closing the app window closes everything**: the page sends a heartbeat to the supervisor, and when the window (or its last tab) disappears, the launcher shuts LiveKit + the agent down and the console window closes too. Set `CLOSE_WITH_WINDOW=0` in `user_data/.env.local` to keep the supervisor running instead.
 - **Conversation panel (left)**: shows your messages and the assistant's answers as they happen; typed input is optional. Open/close it with the tab on the left edge — the panel remembers whether it was open or closed the next time you load the page.
-- **Clear button** (panel header): asks for confirmation, then empties the panel **and** removes the current session's messages from the saved chat history.
+- **The panel is your full chat history**: the assistant keeps one chat log per browser (room). Restart the app or reload the page and the same conversation continues — past messages are loaded back into the panel automatically (older ones stream in as you scroll up, so huge histories stay fast). Small `— date —` dividers show where one sitting ended and the next began.
+- **Clear button** (panel header): asks for confirmation, then empties the panel **and** erases this conversation's saved chat log. **New button**: starts a fresh conversation (new log file) with the next call — the old one stays browsable in Chat history.
 - **Chat history** (clock icon, top right): browse past conversations stored in `user_data/chat/`. Click one and it **opens in the conversation panel** so you can go back to it; the header shows an orange `history ✕` chip — click it to return to the live view. Starting a new call also returns you to the live view.
 - **Center orb** reacts to the assistant's voice and rotates gently during a call; while no call is running it stays calm (no spinning, just a subtle breath). The bar above the call button shows your mic level.
 - **Status card** (top left): dot + word (ready / connecting / live — listening / assistant speaking / server down), mic state, and service chips (livekit, llm, GPU, STT/TTS models, agent) refreshed every 15 s.
 - **Call button preflight**: before connecting it checks LiveKit, the mic, and the library; warnings appear for a down LLM API or missing models instead of a silent stall.
-- **Settings** (gear icon) tabs cover every key: LiveKit URL/key/secret, LLM API URL/key/model (+ **model picker** that lists the provider's real model ids), streaming mode, microphone device, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
+- **Settings** (gear icon) tabs cover every key: LiveKit URL/key/secret, LLM API URL/key/model (+ **model picker** that lists the provider's real model ids), streaming mode, microphone device, Whisper model/device/compute/language/beam/temperature/filters/**initial prompt**, **microphone capture processing** (echo cancel / noise suppress / auto gain), Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
 - **Everything is selectable**: conversation text, history, settings hints — select and Ctrl+C anywhere.
 
 ## 7. Everyday use
@@ -149,9 +152,10 @@ Enter the API key for that provider and a real model name. **The model picker** 
 |---|---|
 | `setup.bat` / `setup.sh` | One-time setup wizard (venv, packages, LiveKit server, models, config) |
 | `start.bat` / `start.sh` | Everyday launcher — one window starts LiveKit + agent + web UI |
-| `python/` | `server.py` (supervisor + web API), `agent.py` (voice pipeline), `local_stt.py` / `local_llm.py` / `local_tts.py` (adapters), `setup_wizard.py`, `web/index.html` |
+| `python/` | `server.py` (supervisor + web API), `agent.py` (voice pipeline), `local_stt.py` / `local_llm.py` / `local_tts.py` (adapters), `setup_wizard.py`, `web/` (UI) |
+| `python/web/` | UI assets: `index.html` (markup), `app.css` (styles), `js/` — `core`, `chat` (windowed transcript + history), `audio` (orb/visuals), `settings`, `call`, `main` |
 | `scripts/` | Helper bats: re-download models, run only the LiveKit server |
-| `user_data/` | Yours to keep: `.env.local` (settings), `livekit.yaml`, `models/whisper/`, `models/piper/`, `chat/` (history) |
+| `user_data/` | Yours to keep: `.env.local` (settings), `livekit.yaml`, `models/whisper/`, `models/piper/`, `chat/` (history), `window_state.json` (remembered app window) |
 
 ## 8. Troubleshooting
 
@@ -171,6 +175,7 @@ Enter the API key for that provider and a real model name. **The model picker** 
 | `large-v3-turbo` / `large-v3` feels slow | On a 6 GB GPU (or any CPU) use `small` or `medium` — big models trade speed for accuracy. |
 | Nothing responds at all | In the launcher window: `LLM API: up` and `LiveKit -> UP` must both show. Fix whichever is down first. |
 | `could not parse config` in the log | The supervisor rewrites `user_data/livekit.yaml` automatically (old copy saved as `livekit.yaml.broken`). |
+| STT is inaccurate with every model size | 1) Set **Language** explicitly (auto-detect misfires on short sentences). 2) Try **Noise suppress = Off** (and Auto gain = Off) — the browser's audio processing can mangle speech before Whisper sees it (gear icon → Speech → Microphone capture processing). 3) Add an **Initial prompt** with the names/jargon you say often. 4) Keep **VAD filter On** so breaths and clicks don't become phantom words. 5) `small`/`large-v3-turbo` with beam 1 is fast; beam 3–5 buys a little accuracy. |
 | Agent never joins the room | The `agent` child must show `up` in the status card. Dispatch is automatic — the agent joins every room on this LiveKit server. Do not set `LIVEKIT_AGENT_NAME`; it switches the worker to named-only dispatch. |
 | Port 8090 already in use | Another launcher window is open (or something else uses 8090). Close it or free the port. |
 
@@ -187,3 +192,32 @@ Enter the API key for that provider and a real model name. **The model picker** 
 ## 10. Privacy
 
 Default setup: every component runs on your machine — browser, LiveKit, Whisper, Piper, and your local LLM. No telemetry, no cloud calls. If you configure a **cloud LLM provider**, only the conversation *text* is sent to that provider (this is exactly like chatting on their website); your audio, STT, and TTS still never leave your machine.
+
+## 11. Credits
+
+This kit only exists because a lot of people chose to share their work. Thank you!
+
+**Core building blocks**
+
+| Project | Role in this kit | License |
+|---|---|---|
+| [LiveKit](https://github.com/livekit/livekit) | Local realtime media server (WebRTC SFU) + [livekit-agents](https://github.com/livekit/agents) Python SDK | Apache-2.0 |
+| [livekit-client (JS)](https://github.com/livekit/client-sdk-js) | Browser side of the voice loop | Apache-2.0 |
+| [faster-whisper](https://github.com/SYSTRAN/faster-whisper) + [CTranslate2](https://github.com/OpenNMT/CTranslate2) | Fast local Whisper inference | MIT |
+| [Whisper](https://github.com/openai/whisper) (OpenAI) | The speech recognition models themselves (incl. `large-v3-turbo`) | MIT |
+| [Silero VAD](https://github.com/snakers4/silero-vad) | Voice activity detection / turn taking | MIT |
+| [Piper](https://github.com/rhasspy/piper) (Rhasspy / OHF-voice) | Offline neural text-to-speech | MIT |
+| Piper voices | e.g. `en_US-amy-medium`, `en_US-lessac-medium` — by the [Piper voices](https://github.com/rhasspy/piper/blob/master/VOICES.md) community | per-voice (CC0/CC-BY) |
+| [aiohttp](https://github.com/aio-libs/aiohttp) | Supervisor web server + API | Apache-2.0 |
+| [python-dotenv](https://github.com/theskumar/python-dotenv) | Settings file handling | BSD-3-Clause |
+| [NVIDIA CUDA wheels](https://pypi.org/project/nvidia-cudnn-cu12/) (`nvidia-cudnn-cu12`, `nvidia-cublas-cu12`) | GPU acceleration for Whisper on Windows/Linux | NVIDIA license |
+
+**Also thanks to**
+
+- **Hugging Face Hub** — hosts the Whisper model downloads (with mirror fallback).
+- **OpenRouter, Groq, OpenAI** and every OpenAI-compatible server project — **LM Studio**, **Ollama**, **llama.cpp**, **oobabooga text-generation-webui** — for the "brain" options, local or cloud.
+- The **Python** and **Chromium** projects, which quietly carry the rest of the stack.
+- Everyone who filed issues and tested dev builds of this kit.
+
+If you are an author of one of the projects above and want the credit entry changed or removed, please open an issue.
+

@@ -98,10 +98,11 @@ CONFIG_DEFAULTS = {
     "WHISPER_COMPUTE": "auto",
     "WHISPER_LANGUAGE": "en",
     "WHISPER_BEAM": "1",
-    "WHISPER_VAD_FILTER": "0",
+    "WHISPER_VAD_FILTER": "1",
     "WHISPER_TEMPERATURE": "0.0",
     "WHISPER_MIN_LOGPROB": "-1.0",
     "WHISPER_MAX_COMPRATIO": "2.4",
+    "WHISPER_INITIAL_PROMPT": "",
     "TTS_VOICE": "en_US-amy-medium.onnx",
     "TTS_SPEED": "1.1",
     "VAD_MIN_SILENCE": "0.55",
@@ -262,6 +263,9 @@ class TranscriptHub:
                 CHAT_DIR.mkdir(parents=True, exist_ok=True)
                 self._history = open(history_path, "a", encoding="utf-8")
                 logger.info("Chat log: %s", history_path)
+                # Session-start marker: the UI shows a small divider so a
+                # long-lived conversation file stays readable across sittings.
+                self._write_history("system", "session-start", "")
             except OSError as exc:
                 logger.warning("Chat log disabled (%s)", exc)
 
@@ -348,10 +352,11 @@ def build_stt(cfg: dict):
         compute_type=cfg.get("WHISPER_COMPUTE", "auto"),
         language=cfg.get("WHISPER_LANGUAGE", "en"),
         beam_size=_num(cfg, "WHISPER_BEAM", "1", int),
-        vad_filter=cfg.get("WHISPER_VAD_FILTER", "0") == "1",
+        vad_filter=cfg.get("WHISPER_VAD_FILTER", "1") == "1",
         temperature=_num(cfg, "WHISPER_TEMPERATURE", "0.0"),
         min_logprob=_num(cfg, "WHISPER_MIN_LOGPROB", "-1.0"),
         max_compratio=_num(cfg, "WHISPER_MAX_COMPRATIO", "2.4"),
+        initial_prompt=cfg.get("WHISPER_INITIAL_PROMPT", ""),
     )
 
 
@@ -441,9 +446,21 @@ class Assistant(Agent):
         super().__init__(instructions=INSTRUCTIONS)
 
 
-def new_history_path(room_name: str) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+def history_path_for(room_name: str) -> Path:
+    """One chat log per room: if this room already has a history file,
+    keep appending to it so the conversation survives reloads/restarts
+    (this is what makes the panel show the FULL chat history)."""
     safe = re.sub(r"[^\w.-]+", "_", room_name or "room")
+    try:
+        CHAT_DIR.mkdir(parents=True, exist_ok=True)
+        existing = sorted(CHAT_DIR.glob(f"*-{safe}.jsonl"),
+                          key=lambda p: p.stat().st_mtime, reverse=True)
+        if existing:
+            logger.info("Resuming existing chat log for room %s", room_name)
+            return existing[0]
+    except OSError:
+        pass
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return CHAT_DIR / f"{stamp}-{safe}.jsonl"
 
 
@@ -467,7 +484,7 @@ async def voice_agent(ctx: agents.JobContext) -> None:
             prev.update(_MODELS.get("last_good") or {k: CONFIG_DEFAULTS.get(k, "") for k in HEAVY_KEYS})
             vad, stt, tts = await asyncio.to_thread(get_models, prev)
 
-        hub = TranscriptHub(ctx.room, new_history_path(ctx.room.name))
+        hub = TranscriptHub(ctx.room, history_path_for(ctx.room.name))
         guard = build_echo_guard(cfg)
 
         def publish_bot(text: str, msg_id: str = "", final: bool = True) -> None:

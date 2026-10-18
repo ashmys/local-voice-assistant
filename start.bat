@@ -16,4 +16,7 @@ if not exist "python\server.py" (
 )
 
 ".venv\Scripts\python.exe" -u "python\server.py"
-pause
+
+rem Normal exits (you closed the app window, or pressed Ctrl+C) close this
+rem console too. Only a real error keeps the window open so you can read it.
+if errorlevel 1 pause
