@@ -48,8 +48,6 @@ from livekit.agents import (  # noqa: E402
 )
 from livekit.plugins import openai, silero  # noqa: E402
 
-AGENT_NAME = "voice-agent"
-
 INSTRUCTIONS = (
     "You are a helpful AI voice assistant. Keep replies short and natural for "
     "spoken conversation: usually 1-3 sentences, plain conversational text. "
@@ -385,7 +383,7 @@ def new_history_path(room_name: str) -> Path:
 server = AgentServer(num_idle_processes=1)
 
 
-@server.rtc_session(agent_name=AGENT_NAME)
+@server.rtc_session()
 async def voice_agent(ctx: agents.JobContext) -> None:
     hub = None
     try:
@@ -509,8 +507,7 @@ async def voice_agent(ctx: agents.JobContext) -> None:
 
 async def reply_to_text(session, text: str) -> None:
     try:
-        session.chat_ctx.add_message(role="user", content=text)
-        await session.generate_reply()
+        await session.generate_reply(user_input=text)
     except Exception:
         logger.exception("text chat reply failed")
 

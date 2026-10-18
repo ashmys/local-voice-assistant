@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 from aiohttp import web
@@ -36,10 +38,10 @@ load_dotenv(ENV_FILE)
 
 HOST = "127.0.0.1"
 PORT = 8090
-AGENT_NAME = "voice-agent"
 
 CHILDREN = {}
 _RESTART = {}
+_OUT = {}
 
 
 def log(msg: str) -> None:
@@ -172,11 +174,16 @@ def spawn(name: str, argv: list) -> None:
         log(f"[{name}] FAILED to start ({exc})")
         return
     CHILDREN[name] = proc
+    _OUT[name] = deque(maxlen=80)
     assign_job(proc)
 
     def pump() -> None:
         for line in proc.stdout:
-            print(f"[{name}] {line.rstrip()}", flush=True)
+            text = line.rstrip()
+            ring = _OUT.get(name)
+            if ring is not None:
+                ring.append(text)
+            print(f"[{name}] {text}", flush=True)
 
     threading.Thread(target=pump, daemon=True, name=f"{name}-pump").start()
 
@@ -184,6 +191,9 @@ def spawn(name: str, argv: list) -> None:
         code = proc.wait()
         print(f"[  sup] [{name}] exited with code {code}", flush=True)
         CHILDREN.pop(name, None)
+        if name == "lk" and code != 0 and child_saw(name, "could not parse config"):
+            heal_yaml()
+            _RESTART[name] = 1
         if _RESTART.get(name):
             delay = _RESTART[name]
             _RESTART[name] = min(delay * 2, 30)
@@ -192,6 +202,50 @@ def spawn(name: str, argv: list) -> None:
             spawn(name, argv)
 
     threading.Thread(target=watch, daemon=True, name=f"{name}-watch").start()
+
+
+def child_saw(name: str, needle: str) -> bool:
+    return any(needle in line for line in _OUT.get(name, ()))
+
+
+def minimal_yaml() -> str:
+    key = setting("LIVEKIT_API_KEY", "devkey") or "devkey"
+    secret = (setting("LIVEKIT_API_SECRET", "")
+              or "voicelocal-secret-1234567890abcdef")
+    return (
+        "# Local LiveKit server config - loopback only, no internet exposure\n"
+        "port: 7880\n"
+        "bind_addresses:\n"
+        "  - 127.0.0.1\n"
+        "\n"
+        "rtc:\n"
+        "  tcp_port: 7881\n"
+        "  port_range_start: 50000\n"
+        "  port_range_end: 50100\n"
+        "  use_external_ip: false\n"
+        "\n"
+        "# Local development keys (must match .env.local)\n"
+        "keys:\n"
+        f"  {key}: {secret}\n"
+    )
+
+
+def heal_yaml() -> None:
+    backup = LIVEKIT_YAML.with_name("livekit.yaml.broken")
+    try:
+        if LIVEKIT_YAML.exists():
+            shutil.copyfile(LIVEKIT_YAML, backup)
+            log(f"saved your old config as {backup.name}")
+    except OSError as exc:
+        log(f"could not back up livekit.yaml ({exc})")
+    try:
+        LIVEKIT_YAML.write_text(minimal_yaml(), encoding="utf-8")
+        log("livekit.yaml was rejected by livekit-server - wrote a clean minimal "
+            "config it cannot misparse")
+        log("the agent joins rooms automatically; no room_config entry is needed")
+    except OSError as exc:
+        log(f"FAILED to regenerate livekit.yaml ({exc})")
+        log("FIX -> open user_data/livekit.yaml in Notepad and simplify it, or delete it")
 
 
 def stop_children() -> None:
@@ -434,14 +488,6 @@ async def api_models_tts(_request: web.Request) -> web.Response:
     return web.json_response(list_tts_models())
 
 
-def dispatch_configured() -> bool:
-    try:
-        text = LIVEKIT_YAML.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    return f"agent_name: {AGENT_NAME}" in text
-
-
 def count_local_models() -> dict:
     stt = 0
     base = whisper_dir()
@@ -471,7 +517,6 @@ async def health(_request: web.Request) -> web.Response:
         "models": count_local_models(),
         "children": kids,
         "venv": VENV_PY.exists(),
-        "dispatch": dispatch_configured(),
         "lib_file": {"exists": lib_ok},
     })
 
@@ -505,21 +550,8 @@ async def token(_request: web.Request) -> web.Response:
         .with_name(identity)
         .with_grants(lk_api.VideoGrants(room_join=True, room=room))
     )
-    try:
-        from livekit.protocol.room_configuration import room_configuration_pb2 as rc_pb
-
-        dispatch = rc_pb.RoomAgentDispatch()
-        dispatch.agent_name = AGENT_NAME
-        try:
-            dispatch.restart_policy = "JRP_ON_FAILURE"
-        except ValueError:
-            pass
-        rc = rc_pb.RoomConfiguration(agents=[dispatch])
-        tk = tk.with_room_config(rc)
-    except Exception as exc:
-        log(f"explicit dispatch unavailable ({exc}) - relying on room default agent")
     jwt = tk.to_jwt()
-    log(f"token issued identity={identity} room={room} (explicit dispatch -> {AGENT_NAME})")
+    log(f"token issued identity={identity} room={room} (agent auto-joins every room)")
     return web.json_response({"url": setting("LIVEKIT_URL"), "token": jwt,
                               "room": room, "identity": identity})
 
@@ -586,12 +618,7 @@ def main() -> None:
     except Exception as exc:
         log(f"startup banner check failed ({exc}) - continuing")
 
-    if not dispatch_configured():
-        log("WARNING: user_data/livekit.yaml has no room_config agent dispatch")
-        log("WARNING: the agent may never receive jobs - re-run setup.bat or add:")
-        log("WARNING:   room_config:")
-        log("WARNING:     agents:")
-        log("WARNING:       - agent_name: voice-agent")
+    log("dispatch: automatic - the agent worker joins every room (no yaml or token setup)")
     if setting("AUTO_OPEN", "1") == "1":
         threading.Thread(target=open_browser_when_ready, daemon=True,
                          name="browser-open").start()

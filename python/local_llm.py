@@ -81,7 +81,7 @@ class TextgenLLM(llm.LLM):
         )
         return (r.choices[0].message.content or "").strip()
 
-    def chat(self, *, chat_ctx, tools=None, conn_options=None):
+    def chat(self, *, chat_ctx, tools=None, conn_options=None, **kwargs):
         return TextgenStream(
             self,
             chat_ctx=chat_ctx,
@@ -129,7 +129,7 @@ class RelayLLM(llm.LLM):
     def model(self) -> str:
         return getattr(self._inner, "model", "")
 
-    def chat(self, *, chat_ctx, tools=None, conn_options=None):
+    def chat(self, *, chat_ctx, tools=None, conn_options=None, **kwargs):
         inner_stream = self._inner.chat(
             chat_ctx=chat_ctx, tools=tools, conn_options=conn_options
         )
