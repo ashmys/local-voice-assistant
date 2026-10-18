@@ -1,0 +1,7 @@
+livekit-agents~=1.8
+livekit-plugins-openai~=1.8
+livekit-plugins-silero~=1.8
+faster-whisper
+piper-tts
+python-dotenv
+aiohttp

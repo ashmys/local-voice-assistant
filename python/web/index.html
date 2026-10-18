@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Voice Assistant</title>
+<script src="livekit-client.js"></script>
+<script>
+  if (!window.LivekitClient) {
+    document.write('<script src="https://unpkg.com/livekit-client@2.23.0/dist/livekit-client.umd.js"><\/script>');
+  }
+  if (!window.LivekitClient) {
+    document.write('<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.23.0/dist/livekit-client.umd.js"><\/script>');
+  }
+</script>
+<style>
+  :root {
+    --bg: #0a0c12; --fg: #e8eaf2; --dim: #8b93a7;
+    --accent: #6ea8ff; --accent2: #9b7bff; --ok: #4ade80; --warn: #fbbf24;
+    --panel: rgba(16, 19, 28, 0.92); --line: rgba(255,255,255,0.08);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1200px 800px at 50% 30%, #121625 0%, var(--bg) 60%);
+    color: var(--fg);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    overflow: hidden; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  .corner { position: fixed; top: 16px; right: 16px; display: flex; gap: 10px; z-index: 30; }
+  .iconbtn {
+    width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--dim); font-size: 20px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all .18s ease; backdrop-filter: blur(8px);
+  }
+  .iconbtn:hover { color: var(--fg); border-color: var(--accent); transform: translateY(-1px); }
+  .iconbtn.active { color: var(--accent); border-color: var(--accent); }
+
+  #center {
+    position: fixed; left: 50%; top: 44%; transform: translate(-50%, -50%);
+    text-align: center; z-index: 5; pointer-events: none;
+  }
+  #state {
+    margin-top: 26px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--dim); transition: color .3s;
+  }
+  #state.speaking { color: var(--accent); }
+  #hint { margin-top: 8px; font-size: 12.5px; color: var(--dim); opacity: .7; }
+
+  #startbtn {
+    position: fixed; left: 50%; top: 62%; transform: translateX(-50%);
+    padding: 14px 42px; font-size: 16px; letter-spacing: .06em;
+    border-radius: 999px; border: 1px solid var(--accent);
+    background: linear-gradient(135deg, rgba(110,168,255,.16), rgba(155,123,255,.16));
+    color: var(--fg); cursor: pointer; z-index: 20; transition: all .2s ease;
+  }
+  #startbtn:hover { box-shadow: 0 0 32px rgba(110,168,255,.35); transform: translateX(-50%) scale(1.03); }
+  #startbtn.live { border-color: var(--warn); color: var(--warn);
+    background: linear-gradient(135deg, rgba(251,191,36,.12), rgba(251,191,36,.05)); }
+
+  #micdock {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    width: min(560px, 80vw); z-index: 10; text-align: center;
+  }
+  #miccanvas { width: 100%; height: 44px; opacity: .9; }
+  #miclabel { font-size: 11px; letter-spacing: .2em; color: var(--dim); margin-top: 2px; opacity: .6; }
+
+  #chatfab {
+    position: fixed; right: 16px; bottom: 16px; z-index: 30;
+  }
+  #chatpanel {
+    position: fixed; right: 16px; bottom: 72px; width: min(400px, 92vw);
+    max-height: min(560px, 72vh); display: none; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    z-index: 29; overflow: hidden; backdrop-filter: blur(12px);
+  }
+  #chatpanel.open { display: flex; }
+  #transcript { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 86%; padding: 8px 12px; border-radius: 14px; font-size: 14px;
+    line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+  .msg.you { align-self: flex-end; background: rgba(110,168,255,.16); border: 1px solid rgba(110,168,255,.25); }
+  .msg.bot { align-self: flex-start; background: rgba(155,123,255,.14); border: 1px solid rgba(155,123,255,.24); }
+  .msg.pending { opacity: .65; }
+  #chatform { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+  #chatinput {
+    flex: 1; background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    border-radius: 10px; color: var(--fg); padding: 10px 12px; font-size: 14px; outline: none;
+  }
+  #chatinput:focus { border-color: var(--accent); }
+  #sendbtn {
+    background: var(--accent); border: none; color: #08101f; font-weight: 600;
+    border-radius: 10px; padding: 0 16px; cursor: pointer; font-size: 14px;
+  }
+
+  .sheet {
+    position: fixed; top: 0; right: -460px; width: min(440px, 96vw); height: 100%;
+    background: var(--panel); border-left: 1px solid var(--line); z-index: 40;
+    transition: right .25s ease; display: flex; flex-direction: column;
+    backdrop-filter: blur(14px);
+  }
+  .sheet.open { right: 0; }
+  .sheethead { display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 18px; border-bottom: 1px solid var(--line); }
+  .sheethead h2 { font-size: 16px; font-weight: 600; letter-spacing: .04em; }
+  .closebtn { background: none; border: none; color: var(--dim); font-size: 22px; cursor: pointer; }
+  .closebtn:hover { color: var(--fg); }
+  .sheetbody { flex: 1; overflow-y: auto; padding: 16px 18px; }
+
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 5px; }
+  .field input[type=text], .field input[type=password], .field select {
+    width: 100%; background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    border-radius: 10px; color: var(--fg); padding: 9px 11px; font-size: 14px; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+  .field input[type=range] { width: 100%; accent-color: var(--accent); }
+  .rangeval { float: right; color: var(--accent); font-size: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .savebar { padding: 14px 18px; border-top: 1px solid var(--line); }
+  #savebtn {
+    width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--accent);
+    background: linear-gradient(135deg, rgba(110,168,255,.2), rgba(155,123,255,.2));
+    color: var(--fg); font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  #savebtn:hover { box-shadow: 0 0 24px rgba(110,168,255,.3); }
+  #savemsg { text-align: center; font-size: 12.5px; margin-top: 8px; min-height: 16px; color: var(--ok); }
+
+  .sess { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    margin-bottom: 10px; cursor: pointer; transition: border-color .15s; }
+  .sess:hover { border-color: var(--accent); }
+  .sess .stitle { font-size: 14px; font-weight: 600; }
+  .sess .sdate { font-size: 11.5px; color: var(--dim); margin-top: 2px; }
+  .sess .sprev { font-size: 12.5px; color: var(--dim); margin-top: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .histmsg { margin-bottom: 12px; }
+  .histmsg .hm-who { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+  .histmsg.bot .hm-who { color: var(--accent2); }
+  .histmsg .hm-ts { color: var(--dim); font-size: 10.5px; margin-left: 6px; }
+  .histmsg .hm-text { font-size: 14px; margin-top: 3px; line-height: 1.5; }
+  .backlink { color: var(--accent); font-size: 13px; cursor: pointer; margin-bottom: 12px; display: inline-block; }
+  .empty { color: var(--dim); text-align: center; margin-top: 40px; font-size: 13.5px; }
+
+  #toast { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 18px; font-size: 13px; z-index: 50; opacity: 0; transition: opacity .3s;
+    pointer-events: none; }
+  #toast.show { opacity: 1; }
+  #health { position: fixed; top: 20px; left: 20px; font-size: 11px; color: var(--dim); z-index: 20; }
+  #health b { color: var(--ok); font-weight: 500; }
+  #health.bad b { color: var(--warn); }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <div id="center">
+    <div id="state">ready</div>
+    <div id="hint">press start, then just talk</div>
+  </div>
+
+  <button id="startbtn">START</button>
+
+  <div id="micdock">
+    <canvas id="miccanvas"></canvas>
+    <div id="miclabel">MIC</div>
+  </div>
+
+  <div class="corner">
+    <button class="iconbtn" id="histbtn" title="Chat history">&#128337;</button>
+    <button class="iconbtn" id="gearbtn" title="Settings">&#9881;</button>
+  </div>
+
+  <button class="iconbtn" id="chatfab" title="Chat">&#128172;</button>
+
+  <div id="chatpanel">
+    <div id="transcript"></div>
+    <form id="chatform">
+      <input id="chatinput" type="text" placeholder="Type a message (optional)..." autocomplete="off">
+      <button id="sendbtn" type="submit">Send</button>
+    </form>
+  </div>
+
+  <div class="sheet" id="settingsheet">
+    <div class="sheethead"><h2>Settings</h2><button class="closebtn" id="closegear">&times;</button></div>
+    <div class="sheetbody">
+      <div class="field"><label>textgen API URL</label><input type="text" id="cfg-TEXTGEN_BASE_URL"></div>
+      <div class="field"><label>API key</label><input type="password" id="cfg-TEXTGEN_API_KEY"></div>
+      <div class="field"><label>Model name</label><input type="text" id="cfg-TEXTGEN_MODEL"></div>
+      <div class="field"><label>Token streaming</label>
+        <select id="cfg-LLM_STREAMING"><option value="0">Full reply first (stable)</option><option value="1">Stream tokens (live text)</option></select>
+      </div>
+      <div class="field"><label>Whisper model (STT)</label><select id="cfg-WHISPER_MODEL"></select></div>
+      <div class="grid2">
+        <div class="field"><label>Device</label>
+          <select id="cfg-WHISPER_DEVICE"><option value="auto">Auto</option><option value="cuda">GPU (CUDA)</option><option value="cpu">CPU</option></select>
+        </div>
+        <div class="field"><label>Compute</label>
+          <select id="cfg-WHISPER_COMPUTE"><option value="auto">Auto</option><option value="float16">float16</option><option value="int8">int8</option></select>
+        </div>
+      </div>
+      <div class="field"><label>Piper voice (TTS)</label><select id="cfg-TTS_VOICE"></select></div>
+      <div class="field"><label>TTS speed <span class="rangeval" id="val-TTS_SPEED"></span></label>
+        <input type="range" id="cfg-TTS_SPEED" min="0.7" max="1.6" step="0.05">
+      </div>
+      <div class="field"><label>End-of-sentence pause (s) <span class="rangeval" id="val-ENDPOINTING_DELAY"></span></label>
+        <input type="range" id="cfg-ENDPOINTING_DELAY" min="0.3" max="2" step="0.05">
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Min silence (s) <span class="rangeval" id="val-VAD_MIN_SILENCE"></span></label>
+          <input type="range" id="cfg-VAD_MIN_SILENCE" min="0.2" max="1.5" step="0.05">
+        </div>
+        <div class="field"><label>VAD threshold <span class="rangeval" id="val-VAD_ACTIVATION_THRESHOLD"></span></label>
+          <input type="range" id="cfg-VAD_ACTIVATION_THRESHOLD" min="0.2" max="0.8" step="0.05">
+        </div>
+      </div>
+      <div class="field"><label>Echo guard</label>
+        <select id="cfg-ECHO_GUARD"><option value="1">On (drops mic echo of the assistant)</option><option value="0">Off</option></select>
+      </div>
+    </div>
+    <div class="savebar">
+      <button id="savebtn">Save changes</button>
+      <div id="savemsg"></div>
+    </div>
+  </div>
+
+  <div class="sheet" id="histsheet">
+    <div class="sheethead"><h2>Chat history</h2><button class="closebtn" id="closehist">&times;</button></div>
+    <div class="sheetbody" id="histbody"></div>
+  </div>
+
+  <div id="health">checking...</div>
+  <div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const LK = window.LivekitClient;
+let room = null, live = false, msgCounter = 0;
+let bubbles = {};
+let agentCtx = null, micCtx = null, agentAn = null, micAn = null;
+let agentData = null, micData = null, rafId = 0;
+let micStream = null;
+
+function toast(text, ms) {
+  const t = $("toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), ms || 2600);
+}
+
+function setState(text, cls) {
+  $("state").textContent = text;
+  $("state").className = cls || "";
+}
+
+async function checkHealth() {
+  try {
+    const r = await fetch("/health");
+    const h = await r.json();
+    const lk = h.livekit && h.livekit.status === "up";
+    const tg = h.textgen && (h.textgen.status || "").startsWith("up");
+    const el = $("health");
+    el.innerHTML = "livekit " + (lk ? "<b>up</b>" : "<b>down</b>") +
+      " &middot; textgen " + (tg ? "<b>up</b>" : "<b>down</b>");
+    el.className = lk && tg ? "" : "bad";
+  } catch (e) {
+    $("health").innerHTML = "server unreachable";
+    $("health").className = "bad";
+  }
+}
+
+function addBubble(who, text, id, final) {
+  if (!text || !text.trim()) return null;
+  const key = id || ("m" + (++msgCounter));
+  let div = bubbles[key];
+  if (!div) {
+    div = document.createElement("div");
+    div.className = "msg " + (who === "user" ? "you" : "bot");
+    $("transcript").appendChild(div);
+    bubbles[key] = div;
+  }
+  div.textContent = text;
+  div.classList.toggle("pending", !final);
+  $("transcript").scrollTop = $("transcript").scrollHeight;
+  return div;
+}
+
+function resetTranscript() {
+  bubbles = {};
+  $("transcript").innerHTML = "";
+}
+
+async function connect() {
+  const r = await fetch("/token?identity=user-" + Math.random().toString(16).slice(2, 6));
+  if (!r.ok) throw new Error("token request failed");
+  const d = await r.json();
+  room = new LK.Room({
+    adaptiveStream: false, dynacast: false,
+    audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  room.on(LK.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+    if (topic !== "transcript") return;
+    try {
+      const m = JSON.parse(new TextDecoder().decode(payload));
+      addBubble(m.who, m.text, m.id, m.final !== false);
+    } catch (e) { /* ignore */ }
+  });
+  room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+    if (track.kind === "audio") {
+      const el = track.attach();
+      el.style.display = "none";
+      document.body.appendChild(el);
+      hookAgentAudio(track);
+    }
+  });
+  room.on(LK.RoomEvent.Disconnected, () => {
+    if (live) { live = false; setLiveUi(false); toast("Conversation ended"); }
+  });
+  await room.prepareConnection(d.url, d.token);
+  await room.connect(d.url, d.token);
+  micStream = new MediaStream(
+    (room.localParticipant.getTrackPublications() || [])
+      .map((p) => p.track && p.track.mediaStreamTrack).filter(Boolean));
+  if (!micStream.getTracks().length) {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+  hookMicAudio(micStream);
+}
+
+async function start() {
+  $("startbtn").disabled = true;
+  setState("connecting");
+  try {
+    await connect();
+    live = true;
+    setLiveUi(true);
+    setState("listening");
+    toast("Connected - just talk (pause to hand over the turn)");
+  } catch (e) {
+    console.error(e);
+    setState("ready");
+    toast("Could not connect: " + e.message);
+  }
+  $("startbtn").disabled = false;
+}
+
+async function stop() {
+  live = false;
+  try { if (room) await room.disconnect(); } catch (e) { /* ignore */ }
+  cleanupAudio();
+  setLiveUi(false);
+  setState("ready");
+}
+
+function setLiveUi(on) {
+  const b = $("startbtn");
+  b.textContent = on ? "STOP" : "START";
+  b.classList.toggle("live", on);
+  if (!on) { setState("ready"); }
+}
+
+$("startbtn").addEventListener("click", () => (live ? stop() : start()));
+
+$("chatform").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const input = $("chatinput");
+  const text = (input.value || "").trim();
+  if (!text || !room || !live) { if (!live) toast("Start a conversation first"); return; }
+  input.value = "";
+  try {
+    await room.localParticipant.publishData(
+      new TextEncoder().encode(JSON.stringify({ text })),
+      { reliable: true, topic: "chat-input" });
+  } catch (e) {
+    toast("Send failed: " + e.message);
+  }
+});
+
+$("chatfab").addEventListener("click", () => {
+  const p = $("chatpanel");
+  p.classList.toggle("open");
+  $("chatfab").classList.toggle("active", p.classList.contains("open"));
+  if (p.classList.contains("open")) $("transcript").scrollTop = $("transcript").scrollHeight;
+});
+
+$("gearbtn").addEventListener("click", async () => {
+  $("settingsheet").classList.add("open");
+  await loadConfigForm();
+});
+$("closegear").addEventListener("click", () => $("settingsheet").classList.remove("open"));
+$("histbtn").addEventListener("click", () => {
+  $("histsheet").classList.add("open");
+  loadHistoryList();
+});
+$("closehist").addEventListener("click", () => $("histsheet").classList.remove("open"));
+
+function hookAgentAudio(track) {
+  try {
+    agentCtx = agentCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (agentCtx.state === "suspended") agentCtx.resume();
+    const src = agentCtx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+    agentAn = agentCtx.createAnalyser();
+    agentAn.fftSize = 128;
+    src.connect(agentAn);
+    agentData = new Uint8Array(agentAn.frequencyBinCount);
+  } catch (e) { console.warn("agent analyser failed", e); }
+}
+
+function hookMicAudio(stream) {
+  try {
+    micCtx = micCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (micCtx.state === "suspended") micCtx.resume();
+    const src = micCtx.createMediaStreamSource(stream);
+    micAn = micCtx.createAnalyser();
+    micAn.fftSize = 128;
+    src.connect(micAn);
+    micData = new Uint8Array(micAn.frequencyBinCount);
+  } catch (e) { console.warn("mic analyser failed", e); }
+}
+
+function cleanupAudio() {
+  cancelAnimationFrame(rafId);
+  try { micStream && micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+  micStream = null; micAn = null; agentAn = null;
+  clearCanvas($("stage")); clearCanvas($("miccanvas"));
+}
+
+function clearCanvas(c) {
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, c.width, c.height);
+}
+
+const stage = $("stage"), sctx = stage.getContext("2d");
+const micc = $("miccanvas"), mctx = micc.getContext("2d");
+
+function fitCanvas() {
+  stage.width = innerWidth * devicePixelRatio;
+  stage.height = innerHeight * devicePixelRatio;
+  micc.width = micc.clientWidth * devicePixelRatio;
+  micc.height = micc.clientHeight * devicePixelRatio;
+}
+addEventListener("resize", fitCanvas);
+fitCanvas();
+
+let phase = 0;
+function draw() {
+  phase += 0.015;
+  drawOrb();
+  drawMic();
+  rafId = requestAnimationFrame(draw);
+}
+
+function drawOrb() {
+  const w = stage.width, h = stage.height;
+  sctx.clearRect(0, 0, w, h);
+  const cx = w / 2, cy = h * 0.44;
+  const base = Math.min(w, h) * 0.16;
+  let level = 0;
+  if (agentAn && agentData) {
+    agentAn.getByteFrequencyData(agentData);
+    let sum = 0;
+    for (let i = 0; i < agentData.length; i++) sum += agentData[i];
+    level = sum / (agentData.length * 255);
+  }
+  const idle = live ? 0.12 : 0.05;
+  const breath = 1 + Math.sin(phase * 1.6) * (live ? 0.05 : 0.03);
+  const r = base * (0.9 + level * 1.6) * breath;
+
+  const glow = sctx.createRadialGradient(cx, cy, r * 0.1, cx, cy, r * 2.6);
+  glow.addColorStop(0, "rgba(110,168,255," + (0.16 + level * 0.5) + ")");
+  glow.addColorStop(1, "rgba(110,168,255,0)");
+  sctx.fillStyle = glow;
+  sctx.fillRect(cx - r * 3, cy - r * 3, r * 6, r * 6);
+
+  const bars = 72;
+  for (let i = 0; i < bars; i++) {
+    const ang = (i / bars) * Math.PI * 2 + phase * 0.4;
+    const v = agentAn && agentData
+      ? agentData[Math.floor(i / bars * agentData.length * 0.7)] / 255
+      : 0;
+    const amp = idle + v * 1.1;
+    const len = r * (0.35 + amp * 0.85);
+    const x1 = cx + Math.cos(ang) * r * 0.72;
+    const y1 = cy + Math.sin(ang) * r * 0.72;
+    const x2 = cx + Math.cos(ang) * (r * 0.72 + len);
+    const y2 = cy + Math.sin(ang) * (r * 0.72 + len);
+    const hue = 215 + Math.sin(i * 0.35 + phase) * 28;
+    sctx.strokeStyle = "hsla(" + hue + ", 90%, " + (62 + v * 22) + "%, " + (0.35 + v * 0.65) + ")";
+    sctx.lineWidth = 2.4 * devicePixelRatio;
+    sctx.lineCap = "round";
+    sctx.beginPath();
+    sctx.moveTo(x1, y1);
+    sctx.lineTo(x2, y2);
+    sctx.stroke();
+  }
+  sctx.beginPath();
+  sctx.arc(cx, cy, r * 0.66, 0, Math.PI * 2);
+  sctx.fillStyle = "rgba(16,22,40,0.9)";
+  sctx.fill();
+  sctx.strokeStyle = "rgba(140,180,255," + (0.3 + level * 0.6) + ")";
+  sctx.lineWidth = 1.6 * devicePixelRatio;
+  sctx.stroke();
+}
+
+function drawMic() {
+  const w = micc.width, h = micc.height;
+  mctx.clearRect(0, 0, w, h);
+  const bars = 48, gap = 3 * devicePixelRatio;
+  const bw = (w - gap * (bars - 1)) / bars;
+  for (let i = 0; i < bars; i++) {
+    let v = 0;
+    if (micAn && micData) {
+      micAn.getByteFrequencyData(micData);
+      v = micData[Math.floor(i / bars * micData.length * 0.6)] / 255;
+    }
+    const bh = Math.max(2 * devicePixelRatio, v * h * 0.92);
+    const x = i * (bw + gap);
+    const y = (h - bh) / 2;
+    mctx.fillStyle = "rgba(110,168,255," + (0.25 + v * 0.7) + ")";
+    mctx.beginPath();
+    const rr = Math.min(bw / 2, 3 * devicePixelRatio);
+    mctx.roundRect(x, y, bw, bh, rr);
+    mctx.fill();
+  }
+}
+draw();
+
+async function loadConfigForm() {
+  try {
+    const [cfgR, sttR, ttsR] = await Promise.all([
+      fetch("/api/config").then((r) => r.json()),
+      fetch("/api/models/stt").then((r) => r.json()),
+      fetch("/api/models/tts").then((r) => r.json()),
+    ]);
+    const cfg = cfgR.config || {};
+    for (const [k, el] of Object.entries(cfgEls())) {
+      if (cfg[k] !== undefined) el.value = cfg[k];
+      if (el.type === "range") updateRange(k);
+    }
+    const sel = $("cfg-WHISPER_MODEL");
+    sel.innerHTML = "";
+    (sttR.local_folders || []).forEach((m) => addOpt(sel, m.name, m.name + " (folder, " + m.size_mb + " MB)"));
+    (sttR.presets || []).forEach((m) => addOpt(sel, m.name, m.name + " (" + m.size_mb + " MB)" + (m.local ? " \u2713" : "")));
+    if (cfg.WHISPER_MODEL) sel.value = cfg.WHISPER_MODEL;
+    const vsel = $("cfg-TTS_VOICE");
+    vsel.innerHTML = "";
+    (ttsR.voices || []).forEach((v) => addOpt(vsel, v.name, v.name + (v.local ? " \u2713" : " (download needed)")));
+    if (cfg.TTS_VOICE) vsel.value = cfg.TTS_VOICE;
+  } catch (e) {
+    toast("Could not load settings: " + e.message);
+  }
+}
+
+function cfgEls() {
+  const out = {};
+  for (const el of document.querySelectorAll("[id^=cfg-]")) out[el.id.slice(4)] = el;
+  return out;
+}
+
+function addOpt(sel, value, label) {
+  const o = document.createElement("option");
+  o.value = value; o.textContent = label;
+  sel.appendChild(o);
+}
+
+function updateRange(key) {
+  const el = $("cfg-" + key), lab = $("val-" + key);
+  if (el && lab && el.type === "range") lab.textContent = el.value;
+}
+document.addEventListener("input", (ev) => {
+  if (ev.target.id && ev.target.id.startsWith("cfg-")) updateRange(ev.target.id.slice(4));
+});
+
+$("savebtn").addEventListener("click", async () => {
+  const msg = $("savemsg");
+  msg.style.color = "var(--ok)";
+  msg.textContent = "saving...";
+  const config = {};
+  for (const [k, el] of Object.entries(cfgEls())) config[k] = el.value;
+  try {
+    const r = await fetch("/api/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    msg.textContent = "Saved - applies to your NEXT conversation.";
+    toast("Settings saved");
+  } catch (e) {
+    msg.style.color = "var(--warn)";
+    msg.textContent = "Save failed: " + e.message;
+  }
+});
+
+async function loadHistoryList() {
+  const body = $("histbody");
+  body.innerHTML = '<div class="empty">loading...</div>';
+  try {
+    const r = await fetch("/api/chat/sessions");
+    const d = await r.json();
+    if (!(d.sessions || []).length) {
+      body.innerHTML = '<div class="empty">No conversations yet.<br>They appear here after you talk.</div>';
+      return;
+    }
+    body.innerHTML = "";
+    d.sessions.forEach((s) => {
+      const div = document.createElement("div");
+      div.className = "sess";
+      const when = new Date(s.mtime * 1000).toLocaleString();
+      div.innerHTML = '<div class="stitle">' + s.turns + ' messages</div>' +
+        '<div class="sdate">' + when + '</div>' +
+        '<div class="sprev"></div>';
+      div.querySelector(".sprev").textContent = s.first || "(no user text)";
+      div.addEventListener("click", () => loadHistorySession(s.file));
+      body.appendChild(div);
+    });
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Failed to load: ' + e.message + "</div>";
+  }
+}
+
+async function loadHistorySession(file) {
+  const body = $("histbody");
+  body.innerHTML = '<span class="backlink">&larr; back to list</span><div class="empty">loading...</div>';
+  body.querySelector(".backlink").addEventListener("click", loadHistoryList);
+  try {
+    const r = await fetch("/api/chat/session?file=" + encodeURIComponent(file));
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    body.innerHTML = '<span class="backlink">&larr; back to list</span>';
+    body.querySelector(".backlink").addEventListener("click", loadHistoryList);
+    (d.messages || []).forEach((m) => {
+      const div = document.createElement("div");
+      div.className = "histmsg " + (m.who === "user" ? "user" : "bot");
+      div.innerHTML = '<span class="hm-who">' + (m.who === "user" ? "you" : "assistant") + "</span>" +
+        '<span class="hm-ts">' + (m.ts || "") + "</span>" +
+        '<div class="hm-text"></div>';
+      div.querySelector(".hm-text").textContent = m.text;
+      body.appendChild(div);
+    });
+  } catch (e) {
+    body.innerHTML += '<div class="empty">Failed: ' + e.message + "</div>";
+  }
+}
+
+checkHealth();
+setInterval(checkHealth, 15000);
+</script>
+</body>
+</html>
