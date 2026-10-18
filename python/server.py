@@ -30,9 +30,15 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 ENV_FILE = ROOT / "user_data" / ".env.local"
 CHAT_DIR = ROOT / "user_data" / "chat"
 LIVEKIT_YAML = ROOT / "user_data" / "livekit.yaml"
-LIVEKIT_EXE = ROOT / "bin" / "livekit-server.exe"
-VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
+LIVEKIT_EXE = ROOT / "bin" / ("livekit-server.exe" if os.name == "nt" else "livekit-server")
 AGENT_SCRIPT = Path(__file__).resolve().parent / "agent.py"
+
+
+def venv_python() -> Path:
+    """Interpreter inside the project venv (layout differs per OS)."""
+    if os.name == "nt":
+        return ROOT / ".venv" / "Scripts" / "python.exe"
+    return ROOT / ".venv" / "bin" / "python"
 
 load_dotenv(ENV_FILE)
 
@@ -304,14 +310,18 @@ def check_gpu():
 
 def check_textgen():
     base = setting("TEXTGEN_BASE_URL", "http://127.0.0.1:5000/v1")
-    key = setting("TEXTGEN_API_KEY", "sk-1234")
+    key = setting("TEXTGEN_API_KEY", "")
+    headers = {"Authorization": "Bearer " + key} if key else {}
     try:
-        req = urllib.request.Request(
-            base.rstrip("/") + "/models", headers={"Authorization": "Bearer " + key})
+        req = urllib.request.Request(base.rstrip("/") + "/models", headers=headers)
         with urllib.request.urlopen(req, timeout=4) as r:
             return f"up (HTTP {r.status})"
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return "auth failed (check the API key)"
+        return f"down (HTTP {e.code})"
     except Exception:
-        return "down (start textgen with --api)"
+        return "down (start your LLM API)"
 
 
 def banner() -> None:
@@ -328,7 +338,7 @@ def banner() -> None:
     log(f"UI + API       : http://{HOST}:{PORT}")
     log(f"python         : {platform.python_version()}  pid: {os.getpid()}")
     log(f"LiveKit        : ws://{lk_host}:{lk_port} -> {'UP' if up else 'DOWN'}")
-    log(f"textgen API    : {check_textgen()}")
+    log(f"LLM API        : {check_textgen()}")
     log(f"GPU (nvidia)   : {check_gpu()}")
     log(f"livekit-client : {'OK' if lib.is_file() else 'MISSING - re-extract the kit'}")
     log("Children       : livekit-server (auto-restart) + agent worker (auto-restart)")
@@ -453,6 +463,35 @@ async def api_chat_session(request: web.Request) -> web.Response:
     return web.json_response({"file": name, "messages": msgs})
 
 
+async def api_chat_clear(request: web.Request) -> web.Response:
+    """Empty the history file(s) of the current room (panel 'clear' button)."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "invalid json"}, status=400)
+    room = (body.get("room") or "").strip() if isinstance(body, dict) else ""
+    if not re.fullmatch(r"[\w-]{1,64}", room or ""):
+        return web.json_response({"error": "bad room name"}, status=400)
+    if not CHAT_DIR.is_dir():
+        return web.json_response({"ok": True, "cleared": []})
+    name_re = re.compile(r"^\d{8}-\d{6}-[\w.-]+\.jsonl$")
+    cleared = []
+    for f in sorted(CHAT_DIR.glob(f"*-{room}.jsonl")):
+        if not name_re.match(f.name):
+            continue
+        try:
+            # Truncate instead of delete: the agent may still hold the file
+            # open in append mode; its next write simply starts fresh.
+            with open(f, "w", encoding="utf-8"):
+                pass
+            cleared.append(f.name)
+        except OSError as exc:
+            log(f"could not clear {f.name}: {exc}")
+    if cleared:
+        log(f"chat history cleared for room {room}: {', '.join(cleared)}")
+    return web.json_response({"ok": True, "cleared": cleared})
+
+
 async def api_config_get(_request: web.Request) -> web.Response:
     return web.json_response({"config": env_dict()})
 
@@ -532,7 +571,7 @@ async def health(_request: web.Request) -> web.Response:
         "gpu": gpu_state,
         "models": count_local_models(),
         "children": kids,
-        "venv": VENV_PY.exists(),
+        "venv": venv_python().exists(),
         "lib_file": {"exists": lib_ok},
     })
 
@@ -611,8 +650,8 @@ def open_browser_when_ready() -> None:
 def main() -> None:
     global JOB, _K32
     _harden_streams()
-    if os.name == "nt" and not VENV_PY.exists():
-        raise SystemExit("[  sup] .venv missing - run setup.bat first")
+    if not venv_python().exists():
+        raise SystemExit("[  sup] .venv missing - run setup.bat (Windows) or setup.sh (Linux/macOS) first")
     if not AGENT_SCRIPT.is_file():
         raise SystemExit(f"[  sup] {AGENT_SCRIPT.name} missing - re-extract the kit")
     if not (WEB_DIR / "index.html").is_file():
@@ -621,7 +660,7 @@ def main() -> None:
     JOB = setup_job_object()
     _K32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
 
-    agent_python = VENV_PY if VENV_PY.exists() else Path(sys.executable)
+    agent_python = venv_python() if venv_python().exists() else Path(sys.executable)
     _RESTART["lk"] = 3
     _RESTART["agent"] = 3
     if LIVEKIT_EXE.exists():
@@ -651,6 +690,7 @@ def main() -> None:
     app.router.add_get("/api/models/tts", api_models_tts)
     app.router.add_get("/api/chat/sessions", api_chat_sessions)
     app.router.add_get("/api/chat/session", api_chat_session)
+    app.router.add_post("/api/chat/clear", api_chat_clear)
     app.router.add_get("/favicon.ico", favicon)
     try:
         web.run_app(app, host=HOST, port=PORT, print=None)

@@ -341,11 +341,15 @@ def build_tts(cfg: dict):
 
 def build_llm(cfg: dict, publish_reply=None):
     base = cfg.get("TEXTGEN_BASE_URL", "http://127.0.0.1:5000/v1")
-    key = cfg.get("TEXTGEN_API_KEY", "sk-1234")
+    raw_key = (cfg.get("TEXTGEN_API_KEY", "") or "").strip()
+    # The openai client insists on a non-empty key; servers without auth
+    # (LM Studio, Ollama, llama.cpp...) simply ignore it. Cloud providers
+    # get the real key from the settings.
+    key = raw_key or "sk-no-key"
     model = cfg.get("TEXTGEN_MODEL", "local-model")
     streaming = cfg.get("LLM_STREAMING", "0") == "1"
-    logger.info("textgen LLM: %s (key %s, model=%s, %s)",
-                base, mask_key(key), model,
+    logger.info("LLM API: %s (key %s, model=%s, %s)",
+                base, mask_key(raw_key) if raw_key else "(none)", model,
                 "token streaming" if streaming else "full-reply mode")
     if streaming:
         inner = openai.LLM(base_url=base, api_key=key, model=model)
@@ -570,28 +574,28 @@ def preflight() -> None:
         logger.error("PREFLIGHT:        it manually, start it first, then restart the agent.")
 
     base = cfg.get("TEXTGEN_BASE_URL", "http://127.0.0.1:5000/v1")
-    key = cfg.get("TEXTGEN_API_KEY", "sk-1234")
+    key = (cfg.get("TEXTGEN_API_KEY", "") or "").strip()
     model = cfg.get("TEXTGEN_MODEL", "local-model")
     url = base.rstrip("/") + "/models"
+    headers = {"Authorization": "Bearer " + key} if key else {}
     try:
-        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + key})
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=5) as r:
-            logger.info("PREFLIGHT: textgen API OK at %s (HTTP %s)", base, r.status)
-            logger.info("PREFLIGHT: using model name '%s' (textgen serves whatever is loaded in its UI)", model)
+            logger.info("PREFLIGHT: LLM API OK at %s (HTTP %s)", base, r.status)
+            logger.info("PREFLIGHT: using model name '%s'", model)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            logger.error("PREFLIGHT: textgen API key MISMATCH (HTTP %s).", e.code)
-            logger.error("PREFLIGHT: FIX -> web UI -> gear icon -> set 'API key' to match")
-            logger.error("PREFLIGHT:        textgen's --api-key, then click 'Save changes'.")
-            logger.error("PREFLIGHT:        That is all - the new key applies to your NEXT")
-            logger.error("PREFLIGHT:        conversation automatically (no restart needed).")
+            logger.error("PREFLIGHT: LLM API rejected the key (HTTP %s).", e.code)
+            logger.error("PREFLIGHT: FIX -> web UI -> gear icon -> set the API key that belongs")
+            logger.error("PREFLIGHT:        to %s, then click 'Save changes'.", base)
+            logger.error("PREFLIGHT:        The new key applies to your NEXT conversation.")
         else:
-            logger.error("PREFLIGHT: textgen API returned HTTP %s at %s - check the textgen window.", e.code, base)
+            logger.error("PREFLIGHT: LLM API returned HTTP %s at %s.", e.code, base)
     except Exception as e:
-        logger.error("PREFLIGHT: textgen API NOT reachable at %s (%s).", base, e)
-        logger.error("PREFLIGHT: FIX -> start textgen with --api enabled (CMD_FLAGS.txt), test with:")
-        logger.error("PREFLIGHT:        curl http://127.0.0.1:5000/docs   (must return a page)")
-        logger.error("PREFLIGHT:        The agent retries by itself if textgen blips later.")
+        logger.error("PREFLIGHT: LLM API NOT reachable at %s (%s).", base, e)
+        logger.error("PREFLIGHT: localhost -> start textgen / LM Studio / Ollama with its API enabled.")
+        logger.error("PREFLIGHT: cloud    -> re-check the base URL, key and model name in the web UI.")
+        logger.error("PREFLIGHT: The agent retries by itself if the API blips later.")
     logger.info("-" * 60)
 
 

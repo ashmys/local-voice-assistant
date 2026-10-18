@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -29,13 +30,25 @@ DRY_RUN = False
 AUTO = False
 
 LIVEKIT_VERSION = "1.13.10"
-LIVEKIT_URL = (
-    "https://github.com/livekit/livekit/releases/download/v"
-    + LIVEKIT_VERSION
-    + "/livekit_"
-    + LIVEKIT_VERSION
-    + "_windows_amd64.zip"
-)
+
+
+def livekit_download():
+    """(url, kind) of the LiveKit server release for this OS/arch.
+
+    kind is 'zip' or 'tar.gz' - matches what LiveKit publishes per platform.
+    """
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    arch = "arm64" if machine in ("aarch64", "arm64") else "amd64"
+    if system == "windows":
+        name, kind = f"livekit_{LIVEKIT_VERSION}_windows_amd64.zip", "zip"
+    elif system == "darwin":
+        name, kind = f"livekit_{LIVEKIT_VERSION}_darwin_{arch}.zip", "zip"
+    else:
+        name, kind = f"livekit_{LIVEKIT_VERSION}_linux_{arch}.tar.gz", "tar.gz"
+    url = ("https://github.com/livekit/livekit/releases/download/v"
+           + LIVEKIT_VERSION + "/" + name)
+    return url, kind
 
 WHISPER_SIZES_MB = {
     "tiny.en": 80, "base.en": 150, "small.en": 500, "small": 500,
@@ -70,7 +83,9 @@ def ask(prompt: str, default: str = "") -> str:
 
 
 def venv_python() -> Path:
-    return VENV_DIR / "Scripts" / "python.exe"
+    if os.name == "nt":
+        return VENV_DIR / "Scripts" / "python.exe"
+    return VENV_DIR / "bin" / "python"
 
 
 def run(cmd: list, **kw) -> int:
@@ -102,8 +117,11 @@ def write_env(updates: dict) -> None:
         f"LIVEKIT_API_KEY={cfg.get('LIVEKIT_API_KEY', 'devkey')}",
         f"LIVEKIT_API_SECRET={cfg.get('LIVEKIT_API_SECRET', 'voicelocal-secret-1234567890abcdef')}",
         "",
-        "# ---- LLM API (OpenAI-compatible, localhost) ----",
-        "# textgen (oobabooga): http://127.0.0.1:5000/v1",
+        "# ---- LLM API (OpenAI-compatible: localhost or cloud) ----",
+        "# Local: textgen http://127.0.0.1:5000/v1 | LM Studio http://127.0.0.1:1234/v1",
+        "#        Ollama http://127.0.0.1:11434/v1 | llama.cpp http://127.0.0.1:8080/v1",
+        "# Cloud: https://api.openai.com/v1 | https://api.groq.com/openai/v1",
+        "# Leave the key empty if your server does not use one.",
         f"TEXTGEN_BASE_URL={cfg.get('TEXTGEN_BASE_URL', 'http://127.0.0.1:5000/v1')}",
         "# Must match the --api-key set in textgen (user_data\\CMD_FLAGS.txt)",
         f"TEXTGEN_API_KEY={cfg.get('TEXTGEN_API_KEY', 'sk-1234')}",
@@ -264,22 +282,37 @@ def step_deps() -> None:
     code = run([py, "-m", "pip", "install", *pkgs])
     if code != 0:
         raise SystemExit("Package installation failed - check your internet and retry.")
-    run([py, "-m", "pip", "install", "nvidia-cublas-cu12", "nvidia-cudnn-cu12"])
+    if platform.system() != "Darwin":  # no NVIDIA wheels for macOS
+        run([py, "-m", "pip", "install", "nvidia-cublas-cu12", "nvidia-cudnn-cu12"])
 
 
 def step_livekit() -> None:
     hr("STEP 2] LiveKit server")
-    exe = BIN_DIR / "livekit-server.exe"
+    exe_name = "livekit-server.exe" if os.name == "nt" else "livekit-server"
+    exe = BIN_DIR / exe_name
     if exe.exists() and exe.stat().st_size > 10_000_000:
         print(f"  already present: {exe}")
         return
-    zpath = BIN_DIR / "livekit.zip"
-    download_resumable(LIVEKIT_URL, zpath, "LiveKit server", min_bytes=1_000_000)
+    url, kind = livekit_download()
+    apath = BIN_DIR / ("livekit.zip" if kind == "zip" else "livekit.tar.gz")
+    download_resumable(url, apath, "LiveKit server", min_bytes=1_000_000)
     if DRY_RUN:
         return
-    with zipfile.ZipFile(zpath) as z:
-        z.extractall(BIN_DIR)
-    zpath.unlink(missing_ok=True)
+    if kind == "zip":
+        with zipfile.ZipFile(apath) as z:
+            z.extractall(BIN_DIR)
+    else:
+        import tarfile
+        with tarfile.open(apath) as t:
+            try:
+                t.extractall(BIN_DIR, filter="data")
+            except TypeError:  # Python < 3.12 has no filter= argument
+                t.extractall(BIN_DIR)
+    apath.unlink(missing_ok=True)
+    if not exe.is_file():  # some archives nest the binary in a subfolder
+        for p in BIN_DIR.rglob(exe_name):
+            p.replace(exe)
+            break
     print(f"  extracted -> {exe}")
 
 
@@ -287,8 +320,13 @@ def step_livekit() -> None:
 def step_config() -> None:
     hr("STEP 3] Configuration")
     write_livekit_yaml()
-    key = ask("textgen API key (from --api-key in CMD_FLAGS.txt)", "sk-1234")
-    base = ask("textgen API URL", "http://127.0.0.1:5000/v1")
+    print("  The LLM can be local (textgen, LM Studio, Ollama, llama.cpp) or cloud")
+    print("  (OpenAI, Groq, OpenRouter, ...). Any OpenAI-compatible URL works.")
+    print("  Local servers usually need NO API key.")
+    base = ask("LLM API base URL (should end in /v1)", "http://127.0.0.1:5000/v1")
+    key = ask("LLM API key (Enter = sk-1234 for textgen default; '-' = none)", "sk-1234")
+    if key.strip().lower() in ("-", "none", "no"):
+        key = ""
     write_env({"TEXTGEN_API_KEY": key, "TEXTGEN_BASE_URL": base})
     print("  You can change every setting later in the web UI (gear icon).")
 
@@ -429,8 +467,11 @@ def step_piper() -> None:
 
 def done() -> None:
     hr("ALL DONE")
-    print("  Start everything with  start.bat")
-    print("  Then open  http://127.0.0.1:8090  and press Start conversation.")
+    if os.name == "nt":
+        print("  Start everything with  start.bat")
+    else:
+        print("  Start everything with  ./start.sh")
+    print("  Then open  http://127.0.0.1:8090  and press play.")
 
 
 def main() -> None:
@@ -454,7 +495,7 @@ def main() -> None:
         hr("MENU")
         print("  1) Python venv + packages")
         print("  2) LiveKit server")
-        print("  3) Configuration (textgen key etc.)")
+        print("  3) Configuration (LLM API etc.)")
         print("  4) Whisper STT model")
         print("  5) Piper TTS voice")
         print("  0) Run ALL steps, then exit")

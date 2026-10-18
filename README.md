@@ -1,84 +1,177 @@
 # Local Voice Assistant Kit
 
-Fully local realtime voice assistant for Windows 11. Nothing leaves your machine: your voice never touches a cloud API.
+A realtime voice assistant you run **yourself**. Talk to it out loud, it listens, thinks, and answers with a natural voice — all in one window. Speech-to-text and text-to-speech always run locally on your machine. For the "brain" you choose: keep it 100% local, or plug in any OpenAI-compatible cloud API. Runs on **Windows 11/10, Linux, and macOS**.
 
 ```
 browser mic -> LiveKit -> Silero VAD -> faster-whisper STT
-    -> textgen LLM (localhost:5000) -> Piper TTS -> LiveKit -> browser speakers
+    -> LLM API (localhost:5000, LM Studio, Ollama, ... or any cloud /v1)
+    -> Piper TTS -> LiveKit -> browser speakers
 ```
 
 - **STT**: faster-whisper (GPU via CUDA, or CPU)
-- **LLM**: whatever model you have loaded in textgen (oobabooga), via its OpenAI-compatible API
-- **TTS**: Piper (offline, CPU, natural English voices)
-- **UI**: minimalist control page - live AI/mic audio visualization, optional text chat, full settings behind the gear icon, and a browsable chat history
+- **LLM**: any OpenAI-compatible chat API — local (textgen / LM Studio / Ollama / llama.cpp) or cloud (OpenAI / Groq / OpenRouter / ...)
+- **TTS**: Piper (offline, CPU, natural voices)
+- **UI**: minimalist control page — live AI/mic audio visualization, conversation panel with text chat, full settings behind the gear icon, browsable chat history you can reopen
 
-## Folder layout
+---
+
+## 1. Requirements
+
+| What | Minimum | Notes |
+|---|---|---|
+| OS | Windows 10/11 64-bit, Linux (Ubuntu 22.04+, Debian 12+, Fedora, Arch), macOS 12+ (Intel or Apple Silicon) | |
+| Python | **3.11 or 3.12** (3.13 usually works) | Windows: check *"Add python.exe to PATH"* in the installer. Linux: needs the `python3-venv`/`python3-pip` packages. |
+| RAM | 8 GB recommended | Whisper + the browser both use RAM. |
+| Disk | 2–6 GB free | Whisper model (80 MB – 3 GB) + Piper voice (~60 MB) + packages. |
+| GPU | Optional | NVIDIA card speeds up Whisper a lot (CUDA is set up automatically). CPU is fine for `tiny`/`base`/`small` models. macOS runs Whisper on CPU. |
+| An LLM endpoint | Anything that speaks the OpenAI chat API | Local: textgen, LM Studio, Ollama, llama.cpp-server — no API key needed. Cloud: OpenAI, Groq, OpenRouter — set your key. |
+| Browser | Chrome, Edge, or Firefox | Microphone permission required. |
+| Free ports | 8090, 7880, 7881, 50000–50100, 5000 | 5000 only if you run textgen locally. |
+| Internet | Only for setup downloads | Models and the LiveKit server binary. Also if you use a cloud LLM. |
+
+---
+
+## 2. Setup — Windows 11 / 10
+
+1. **Install Python** 3.11 or 3.12 from [python.org](https://www.python.org/downloads/). On the first installer screen, tick **"Add python.exe to PATH"** — this is the step people most often miss.
+2. **Extract the kit** somewhere safe. A path without spaces (e.g. `C:\voice-assistant`) is the least surprising.
+3. **Double-click `setup.bat`.** It walks through everything:
+   - creates `.venv` and installs all Python packages,
+   - downloads the LiveKit server,
+   - asks for your LLM API URL + key (Enter accepts the local defaults),
+   - lets you pick a Whisper model (start with `small` — good accuracy, fits a 6 GB GPU) and a Piper voice,
+   - tests your GPU and pre-downloads the chosen model.
+   Downloads are **resumable**: if one stalls, press Ctrl+C and run `setup.bat` again — it continues where it stopped.
+4. **Start your LLM** and load a model:
+   - *textgen (oobabooga)*: enable the API (`--api` / `--api-key sk-1234` in `user_data\CMD_FLAGS.txt`),
+   - *LM Studio*: Developer tab → Start Server (port 1234),
+   - *Ollama*: `ollama serve` (port 11434).
+5. **Double-click `start.bat`.** One console window supervises everything (LiveKit + agent + web UI) and opens `http://127.0.0.1:8090` automatically (set `AUTO_OPEN=0` in `user_data/.env.local` to disable).
+6. Press the **round play button** at the bottom center and just talk. It turns into a red stop button while the call is live.
+
+> Windows microphone privacy: if the mic never picks up sound, open **Settings → Privacy & security → Microphone** and allow desktop apps and your browser.
+
+## 3. Setup — Linux (Ubuntu / Debian / Fedora / Arch)
+
+```bash
+# Ubuntu / Debian prerequisites (one time):
+sudo apt install python3 python3-venv python3-pip
+# Fedora: sudo dnf install python3      Arch: sudo pacman -S python
+
+cd local-voice-assistant
+chmod +x setup.sh start.sh
+./setup.sh          # same wizard as Windows: venv, LiveKit server, models, config
+./start.sh          # one window: LiveKit + agent + web UI on http://127.0.0.1:8090
+```
+
+- `setup.sh` downloads the correct LiveKit binary for your architecture (x86_64 / aarch64) automatically.
+- **NVIDIA GPU**: install the driver first (`nvidia-smi` must work). The CUDA runtime libraries are installed by setup automatically.
+- **Headless server?** The UI needs a browser — run it on your desktop, or open `http://<server-ip>:8090` from another machine (change `bind_addresses` in `user_data/livekit.yaml` and `LIVEKIT_URL` in `user_data/.env.local` accordingly; this exposes LiveKit on the network, so do it only on a trusted LAN).
+- Firewalls usually don't block loopback; if you browse from another device, open ports 8090, 7880, 7881, 50000–50100.
+
+## 4. Setup — macOS (Intel & Apple Silicon)
+
+```bash
+brew install python@3.12     # or use the python.org installer
+
+cd local-voice-assistant
+chmod +x setup.sh start.sh
+./setup.sh
+./start.sh
+```
+
+- Whisper runs on **CPU** (CUDA is not available on macOS) — pick `tiny.en`, `base.en`, or `small` for responsive turns; `large-v3` will feel sluggish.
+- The **first time**, macOS asks for microphone permission for your browser — allow it (System Settings → Privacy & Security → Microphone if you missed the prompt).
+- Piper and faster-whisper ship macOS wheels; if `pip` can't find a wheel for your exact setup, open an issue.
+
+---
+
+## 5. Point it at an LLM (local or cloud)
+
+The assistant talks to **any OpenAI-compatible API**. Configure it in the web UI: **gear icon → Connection → Language model**, then *Save changes* (applies to the next conversation).
+
+### Local (private by default)
+
+| Server | Base URL | API key |
+|---|---|---|
+| textgen (oobabooga) | `http://127.0.0.1:5000/v1` | your `--api-key` (default `sk-1234`) |
+| LM Studio | `http://127.0.0.1:1234/v1` | leave empty |
+| Ollama | `http://127.0.0.1:11434/v1` | leave empty |
+| llama.cpp server | `http://127.0.0.1:8080/v1` | leave empty |
+
+If your server has no authentication, **leave the key empty** — the kit detects that and sends no Authorization header. Model name: local servers usually ignore it (`local-model` is fine); Ollama wants the model tag (`llama3.1`, `qwen2.5:7b`, ...).
+
+### Cloud (works exactly the same way)
+
+| Provider | Base URL | Example model |
+|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| OpenRouter | `https://openrouter.ai/api/v1` | any model id from their site |
+| Together / Fireworks / vLLM | `https://.../v1` | per their docs |
+
+Enter the API key for that provider and a real model name. **Privacy note:** with a cloud LLM, your *conversation text* goes to that provider; your voice still never leaves the machine (STT and TTS stay local).
+
+`LLM streaming` (gear icon): *Full reply first* is the most stable mode; *Stream tokens* shows the text live while it is generated.
+
+---
+
+## 6. Using the web page
+
+- **Conversation panel (left)**: shows your messages and the assistant's answers as they happen; typed input is optional. Open/close it with the tab on the left edge — the panel remembers whether it was open or closed the next time you load the page.
+- **Clear button** (panel header): asks for confirmation, then empties the panel **and** removes the current session's messages from the saved chat history.
+- **Chat history** (clock icon, top right): browse past conversations stored in `user_data/chat/`. Click one and it **opens in the conversation panel** so you can go back to it; the header shows an orange `history ✕` chip — click it to return to the live view. Starting a new call also returns you to the live view.
+- **Center orb** reacts to the assistant's voice and rotates gently during a call; while no call is running it stays calm (no spinning, just a subtle breath). The bar above the call button shows your mic level.
+- **Status card** (top left): dot + word (ready / connecting / live — listening / assistant speaking / server down), mic state, and service chips (livekit, llm, GPU, STT/TTS models, agent) refreshed every 15 s.
+- **Call button preflight**: before connecting it checks LiveKit, the mic, and the library; warnings appear for a down LLM API or missing models instead of a silent stall.
+- **Settings** (gear icon) tabs cover every key: LiveKit URL/key/secret, LLM API URL/key/model, streaming mode, microphone device, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
+
+## 7. Everyday use
+
+- Change Whisper model / TTS voice / LLM endpoint without touching files: gear icon in the web page.
+- Drop a CTranslate2 Whisper model into `user_data/models/whisper/<name>/` and it appears in the picker. Same for Piper voices in `user_data/models/piper/`.
+- Conversation history lands in `user_data/chat/<date>-<room>.jsonl` (one JSON object per line).
+- `scripts/setup_models.bat` (Windows) or `python python/setup_wizard.py --models-only` re-opens only the model download steps.
+- `scripts/start_livekit.bat` runs only the LiveKit server for debugging.
+- `.venv/` and `bin/` are generated by setup and can be deleted anytime — setup recreates them.
 
 | Path | Purpose |
 |---|---|
-| `setup.bat` | One-time setup wizard (venv, packages, LiveKit server, models, config) |
-| `start.bat` | Everyday launcher - one window starts LiveKit + agent + web UI |
-| `python/` | All Python code: `server.py` (supervisor + web API), `agent.py` (voice pipeline), `local_stt.py` / `local_llm.py` / `local_tts.py` (adapters), `setup_wizard.py`, `web/index.html` |
+| `setup.bat` / `setup.sh` | One-time setup wizard (venv, packages, LiveKit server, models, config) |
+| `start.bat` / `start.sh` | Everyday launcher — one window starts LiveKit + agent + web UI |
+| `python/` | `server.py` (supervisor + web API), `agent.py` (voice pipeline), `local_stt.py` / `local_llm.py` / `local_tts.py` (adapters), `setup_wizard.py`, `web/index.html` |
 | `scripts/` | Helper bats: re-download models, run only the LiveKit server |
-| `user_data/` | Yours to keep: `.env.local` (settings), `livekit.yaml`, `models/whisper/`, `models/piper/`, `chat/` (conversation history, one JSONL per session) |
+| `user_data/` | Yours to keep: `.env.local` (settings), `livekit.yaml`, `models/whisper/`, `models/piper/`, `chat/` (history) |
 
-`.venv/` and `bin/` are generated by setup and can be deleted anytime - setup recreates them.
-
-## Quick start
-
-1. Extract anywhere (no spaces in the path is safest).
-2. Run `setup.bat` once. It:
-   - creates `.venv` and installs packages,
-   - downloads the LiveKit server,
-   - asks for your textgen API key,
-   - lets you pick a Whisper model (small fits a 6 GB GPU well) and a Piper voice,
-   - tests the GPU and pre-downloads the Whisper model.
-   Downloads are resumable: if one stalls, press Ctrl+C and run `setup.bat` again - it continues where it stopped.
-3. Start textgen with the API enabled (`--api --api-key sk-1234` in `user_data\CMD_FLAGS.txt`) and load your model.
-4. Run `start.bat`. One window supervises everything and opens `http://127.0.0.1:8090` in your browser automatically (set `AUTO_OPEN=0` in `user_data/.env.local` to disable).
-5. Press the **round play button** at the bottom center and talk. It turns into a stop button (red, square icon) while the call is live.
-
-## Using the web page
-
-- **Voice-call layout**: your messages and the assistant's answers appear in the **left panel**, docked flush to the window edge (typed input optional), the AI orb canvas sits dead-center of the window, and the **round play/stop button** at the center bottom starts/stops the call.
-- **Center orb** is drawn on a dedicated fullscreen canvas behind everything, so it is always exactly centered; it reacts to the assistant's voice. The **bar above the button** shows your mic.
-- **Top-left status card** is live and color-coded: dot + word (ready / connecting / live - listening / assistant speaking / server down), plus your mic state (mic on / mic active / mic muted / mic off) and service chips (livekit, textgen, GPU, STT/TTS models, agent) refreshed every 15 s.
-- **Call button runs a preflight check first**: LiveKit reachable, mic available, library present; warnings appear for textgen down or missing models. Failures are shown as a clear message instead of a silent stall.
-- **Gear icon** (top right) opens an almost-fullscreen settings window with tabs (Connection / Speech / Behavior / Advanced) covering every key: LiveKit URL/key/secret, textgen URL/key/model, streaming mode, microphone input device, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
-- **Clock icon** (top right) browses past conversations, stored in `user_data/chat/`.
-
-## Everyday use
-
-- Change Whisper model / TTS voice / any setting without touching files: gear icon in the web page.
-- Drop a CTranslate2 Whisper model into `user_data/models/whisper/<name>/` and it appears in the picker. Same for Piper voices in `user_data/models/piper/`.
-- Conversation history lands in `user_data/chat/<date>-<room>.jsonl` (one JSON object per line).
-- `scripts/setup_models.bat` re-opens only the model download steps.
-- `scripts/start_livekit.bat` runs only the LiveKit server for debugging.
-
-## Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `setup.bat` download stalls | Press Ctrl+C, run it again - it resumes. Mirror fallback is automatic. |
-| Whisper shows `cpu` although you have a GPU | Gear icon -> Device = `cuda`. If cuDNN errors appear, re-run `setup.bat` step 1 (installs nvidia-cudnn-cu12). |
-| Agent log: `textgen API key MISMATCH (HTTP 401)` | Gear icon -> API key must match textgen's `--api-key`. Save; it applies to the next conversation. |
+| Setup download stalls | Press Ctrl+C, run it again — it resumes. Mirror fallback is automatic. |
+| `Python was not found in PATH` (Windows) | Reinstall Python and tick "Add python.exe to PATH", or install from the Microsoft Store and re-open the terminal. |
+| `python3-venv` error (Linux) | `sudo apt install python3-venv python3-pip`, then run `./setup.sh` again. |
+| Whisper shows `cpu` although you have a GPU | Gear icon → Device = `cuda`. If cuDNN errors appear, re-run setup step 1 (installs nvidia-cudnn-cu12). |
+| Agent log: `LLM API rejected the key (HTTP 401)` | Gear icon → API key must match what your provider expects. Save; applies to the next conversation. |
+| Agent log: `LLM API NOT reachable` | Local: start textgen / LM Studio / Ollama with the API enabled. Cloud: re-check URL, key, model name. The agent retries by itself. |
 | Agent hears itself / answers its own voice | Keep Echo guard ON (gear icon). Headphones avoid the issue entirely. |
-| Text chat works but the bot never hears my voice | The mic is now published automatically when the call starts. If the status card says `mic on` but stays silent, pick another input device in gear icon -> Connection -> Microphone (applies to the next call). If Windows blocks capture entirely: Settings -> Privacy & security -> Microphone -> allow desktop apps. A red `Mic is connected but silent` toast means the browser delivers no signal - check the device and Windows privacy settings. |
+| Text chat works but the bot never hears my voice | Status card says `mic on` but silent? Pick another input device (gear icon → Connection → Microphone, applies to the next call). Windows: Settings → Privacy & security → Microphone → allow desktop apps. macOS: System Settings → Privacy & Security → Microphone → allow your browser. A red `Mic is connected but silent` toast means the browser delivers no signal. |
 | Text replies but no sound | Check the Piper voice exists in `user_data/models/piper/` (`<name>.onnx` + `<name>.onnx.json`). |
-| `large-v3-turbo` or `large-v3` feels slow | On a 6 GB GPU use `small` or `medium` - the big models trade speed for accuracy. |
-| Nothing responds at all | In the `start.bat` window: `textgen API: up` and `LiveKit -> UP` must both show. Fix whichever is down first. |
-| `could not parse config` in the log | The supervisor rewrites `user_data/livekit.yaml` automatically (old copy saved as `livekit.yaml.broken`). The agent does not need any `room_config` entry - it joins every room on its own. |
-| Agent never joins the room | Make sure the `agent` child shows `up` in the top-left status row. Dispatch is automatic: the agent worker joins every room created on this LiveKit server, no token or yaml setup required. Do not set a `LIVEKIT_AGENT_NAME` environment variable - it would switch the worker to named-only dispatch. |
+| `large-v3-turbo` / `large-v3` feels slow | On a 6 GB GPU (or any CPU) use `small` or `medium` — big models trade speed for accuracy. |
+| Nothing responds at all | In the launcher window: `LLM API: up` and `LiveKit -> UP` must both show. Fix whichever is down first. |
+| `could not parse config` in the log | The supervisor rewrites `user_data/livekit.yaml` automatically (old copy saved as `livekit.yaml.broken`). |
+| Agent never joins the room | The `agent` child must show `up` in the status card. Dispatch is automatic — the agent joins every room on this LiveKit server. Do not set `LIVEKIT_AGENT_NAME`; it switches the worker to named-only dispatch. |
+| Port 8090 already in use | Another launcher window is open (or something else uses 8090). Close it or free the port. |
 
-## Ports
+## 9. Ports
 
 | Port | Service |
 |---|---|
 | 8090 | Web UI + API (this kit) |
 | 7880 | LiveKit signaling |
-| 7881, 50000-50100 | LiveKit RTC |
-| 5000 | textgen API (must end in `/v1` in the settings) |
+| 7881, 50000–50100 | LiveKit RTC |
+| 5000 | textgen API, if used (URL must end in `/v1`) |
+| 1234 / 11434 / 8080 | LM Studio / Ollama / llama.cpp, if used |
 
-## Privacy
+## 10. Privacy
 
-Every component runs on your machine. The only network traffic is between your browser, the local LiveKit server, and your local LLM API. No telemetry, no cloud calls.
+Default setup: every component runs on your machine — browser, LiveKit, Whisper, Piper, and your local LLM. No telemetry, no cloud calls. If you configure a **cloud LLM provider**, only the conversation *text* is sent to that provider (this is exactly like chatting on their website); your audio, STT, and TTS still never leave your machine.

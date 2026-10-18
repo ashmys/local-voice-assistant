@@ -147,4 +147,7 @@ def relay_llm(inner, publish_reply=None):
 
 
 def create_textgen_llm(*, base_url: str, api_key: str, model: str, on_reply=None):
-    return TextgenLLM(base_url=base_url, api_key=api_key, model=model, on_reply=on_reply)
+    # Empty key is fine for servers without auth (LM Studio, Ollama,
+    # llama.cpp); the openai client just needs a non-empty placeholder.
+    return TextgenLLM(base_url=base_url, api_key=api_key or "sk-no-key",
+                      model=model, on_reply=on_reply)

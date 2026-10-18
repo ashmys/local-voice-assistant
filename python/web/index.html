@@ -107,6 +107,9 @@
   #sidehead .clearlog { background: none; border: none; color: var(--dim); font-size: 11px;
     cursor: pointer; letter-spacing: .06em; }
   #sidehead .clearlog:hover { color: var(--warn); }
+  #sidehead .histmode { display: none; color: var(--warn); cursor: pointer;
+    font-size: 11px; letter-spacing: .06em; }
+  #sidehead .histmode.show { display: inline; }
   #transcript { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
   .msg { max-width: 88%; padding: 8px 12px; border-radius: 14px; font-size: 14px;
     line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
@@ -136,6 +139,7 @@
     background: #10131c; border: 1px solid var(--line); border-radius: 18px;
     display: flex; flex-direction: column; overflow: hidden;
     box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+  .modalbox.small { width: min(92vw, 460px); height: auto; }
   .modalhead { display: flex; align-items: center; gap: 12px; padding: 14px 18px;
     border-bottom: 1px solid var(--line); }
   .modalhead h2 { font-size: 16px; font-weight: 600; letter-spacing: .03em; }
@@ -162,11 +166,22 @@
     border-radius: 10px; color: var(--fg); padding: 9px 11px; font-size: 14px; outline: none;
   }
   .field input:focus, .field select:focus { border-color: var(--accent); }
+  select { color-scheme: dark; }
+  select option { background: #10131c; color: var(--fg); }
+  .hint { font-size: 11px; color: var(--dim); margin-top: 5px; line-height: 1.55; }
   .field input[type=range] { width: 100%; accent-color: var(--accent); }
   .rangeval { float: right; color: var(--accent); font-size: 12px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
   .savebar { padding: 14px 18px; border-top: 1px solid var(--line); }
+  .btnrow { display: flex; gap: 10px; }
+  .halfbtn { flex: 1; padding: 11px; border-radius: 12px; border: 1px solid var(--line);
+    background: rgba(255,255,255,.05); color: var(--fg); font-size: 14px; cursor: pointer; }
+  .halfbtn:hover { border-color: var(--accent); }
+  .dangerbtn { flex: 1; padding: 11px; border-radius: 12px; border: 1px solid rgba(248,113,113,.5);
+    background: rgba(248,113,113,.14); color: #fca5a5; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .dangerbtn:hover { background: rgba(248,113,113,.24); }
+  #cleartext { color: var(--fg); font-size: 13.5px; line-height: 1.6; }
   #savebtn {
     width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--accent);
     background: linear-gradient(135deg, rgba(110,168,255,.2), rgba(155,123,255,.2));
@@ -182,12 +197,6 @@
   .sess .sdate { font-size: 11.5px; color: var(--dim); margin-top: 2px; }
   .sess .sprev { font-size: 12.5px; color: var(--dim); margin-top: 4px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .histmsg { margin-bottom: 12px; }
-  .histmsg .hm-who { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
-  .histmsg.bot .hm-who { color: var(--accent2); }
-  .histmsg .hm-ts { color: var(--dim); font-size: 10.5px; margin-left: 6px; }
-  .histmsg .hm-text { font-size: 14px; margin-top: 3px; line-height: 1.5; }
-  .backlink { color: var(--accent); font-size: 13px; cursor: pointer; margin-bottom: 12px; display: inline-block; }
   .empty { color: var(--dim); text-align: center; margin-top: 40px; font-size: 13.5px; }
 
   #toast { position: fixed; bottom: 130px; left: 50%; transform: translateX(-50%);
@@ -247,7 +256,7 @@
   </div>
 
   <div id="side" class="hidden">
-    <div id="sidehead"><span>Conversation</span><button class="clearlog" id="clearlog" type="button">clear</button></div>
+    <div id="sidehead"><span>Conversation</span><span id="histmode" class="histmode" title="Viewing a past conversation - click to return to the live view">history &#10005;</span><button class="clearlog" id="clearlog" type="button">clear</button></div>
     <div id="transcript"></div>
     <form id="chatform">
       <input id="chatinput" type="text" placeholder="Type a message (optional)..." autocomplete="off">
@@ -288,11 +297,14 @@
           <div class="field"><label>Input device (applies to the next call)</label>
             <select id="micdevice"><option value="">System default</option></select>
           </div>
-          <div class="sect">Language model</div>
-          <div class="field"><label>textgen API URL</label><input type="text" id="cfg-TEXTGEN_BASE_URL"></div>
+          <div class="sect">Language model (OpenAI-compatible)</div>
+          <div class="field"><label>API base URL (localhost or cloud)</label>
+            <input type="text" id="cfg-TEXTGEN_BASE_URL" placeholder="http://127.0.0.1:5000/v1">
+            <div class="hint">Local: textgen :5000/v1 &middot; LM Studio :1234/v1 &middot; Ollama :11434/v1 &middot; llama.cpp :8080/v1<br>Cloud: https://api.openai.com/v1 &middot; https://api.groq.com/openai/v1 &middot; https://openrouter.ai/api/v1</div>
+          </div>
           <div class="grid2">
-            <div class="field"><label>textgen API key</label><input type="password" id="cfg-TEXTGEN_API_KEY"></div>
-            <div class="field"><label>Model name</label><input type="text" id="cfg-TEXTGEN_MODEL"></div>
+            <div class="field"><label>API key (empty = none needed)</label><input type="password" id="cfg-TEXTGEN_API_KEY" placeholder="sk-... or empty for local servers"></div>
+            <div class="field"><label>Model name</label><input type="text" id="cfg-TEXTGEN_MODEL" placeholder="local-model, gpt-4o-mini, llama3..."></div>
           </div>
           <div class="field"><label>Token streaming</label>
             <select id="cfg-LLM_STREAMING"><option value="0">Full reply first (stable)</option><option value="1">Stream tokens (live text)</option></select>
@@ -382,6 +394,19 @@
     </div>
   </div>
 
+  <div class="modal" id="clearsheet">
+    <div class="modalbox small">
+      <div class="modalhead"><h2>Clear conversation?</h2><button class="closebtn" id="clearno">&times;</button></div>
+      <div class="modalbody">
+        <p id="cleartext">This empties the conversation panel and removes the current session's messages from chat history. This cannot be undone.</p>
+      </div>
+      <div class="savebar btnrow">
+        <button id="clearno2" class="halfbtn" type="button">Cancel</button>
+        <button id="clearyes" class="dangerbtn" type="button">Clear</button>
+      </div>
+    </div>
+  </div>
+
   <div id="status">
     <div id="strow">
       <span id="stdot"></span>
@@ -400,6 +425,7 @@ const ICON_PLAY = '<svg viewBox="0 0 24 24" width="34" height="34" fill="current
 const ICON_STOP = '<svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>';
 let room = null, live = false, msgCounter = 0;
 let bubbles = {};
+let viewingFile = null, currentRoom = "";
 let agentCtx = null, micCtx = null, agentAn = null, micAn = null;
 let agentData = null, micData = null, rafId = 0;
 let micStream = null, stateTimer = 0;
@@ -453,7 +479,7 @@ async function checkHealth() {
     const ag = !!(h.children && h.children.agent === "up");
     const el = $("stchips");
     el.innerHTML = chip("livekit", lk, lk ? "up" : "down") + " &middot; " +
-      chip("textgen", tg, tg ? "up" : "down") + " &middot; " +
+      chip("llm", tg, tg ? "up" : "down") + " &middot; " +
       chip("gpu", gpu, gpu ? "yes" : "no") + " &middot; " +
       chip("stt", sttN > 0, sttN) + " &middot; " +
       chip("tts", ttsN > 0, ttsN) + " &middot; " +
@@ -480,11 +506,11 @@ async function precheck() {
     fatal.push("backend unreachable (" + e.message + ")");
   }
   if (h) {
-    if (h.venv === false) fatal.push(".venv missing - run setup.bat");
+    if (h.venv === false) fatal.push(".venv missing - run setup.bat (Windows) or setup.sh");
     if (h.lib_file && !h.lib_file.exists) fatal.push("livekit-client.js missing on server - re-extract the kit");
-    if (h.livekit && h.livekit.status !== "up") fatal.push("LiveKit server is down - restart start.bat");
+    if (h.livekit && h.livekit.status !== "up") fatal.push("LiveKit server is down - restart start.bat / start.sh");
     if (h.children && h.children.agent && h.children.agent !== "up") warn.push("agent worker: " + h.children.agent);
-    if (h.textgen && !String(h.textgen.status || "").startsWith("up")) warn.push("textgen API is down - the bot cannot reply until it starts");
+    if (h.textgen && !String(h.textgen.status || "").startsWith("up")) warn.push("LLM API is down - the bot cannot reply until it starts");
     if (h.models) {
       if (!Number(h.models.stt)) warn.push("no Whisper model downloaded yet - run setup.bat or check settings");
       if (!Number(h.models.tts)) warn.push("no Piper voice downloaded yet - run setup.bat or check settings");
@@ -524,6 +550,7 @@ function addBubble(who, text, id, final) {
 function resetTranscript() {
   bubbles = {};
   $("transcript").innerHTML = "";
+  if (viewingFile) setHistMode(null);
 }
 
 async function connect() {
@@ -536,6 +563,7 @@ async function connect() {
   }
   const d = await r.json();
   if (!d.url || !d.token) throw new Error(d.error || "bad token response");
+  currentRoom = d.room || "";
   resetTranscript();
   const dev = (() => { try { return localStorage.getItem("micDeviceId") || ""; } catch (e) { return ""; } })();
   room = new LK.Room({
@@ -673,10 +701,52 @@ $("chatform").addEventListener("submit", async (ev) => {
   }
 });
 
-$("clearlog").addEventListener("click", resetTranscript);
+function setHistMode(file) {
+  viewingFile = file || null;
+  $("histmode").classList.toggle("show", !!viewingFile);
+}
+
+$("histmode").addEventListener("click", () => {
+  resetTranscript();
+  setHistMode(null);
+  toast("Back to the live conversation view");
+});
+
+$("clearlog").addEventListener("click", () => {
+  if (!$("transcript").children.length && !currentRoom) { toast("Nothing to clear yet"); return; }
+  openModal("clearsheet");
+});
+$("clearno").addEventListener("click", () => closeModal("clearsheet"));
+$("clearno2").addEventListener("click", () => closeModal("clearsheet"));
+$("clearyes").addEventListener("click", async () => {
+  closeModal("clearsheet");
+  resetTranscript();
+  if (!currentRoom) { toast("Conversation cleared"); return; }
+  try {
+    const r = await fetch("/api/chat/clear", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room: currentRoom }),
+    });
+    if (!r.ok) {
+      let why = "HTTP " + r.status;
+      try { const j = await r.json(); if (j.error) why = j.error; } catch (e) {}
+      throw new Error(why);
+    }
+    const d = await r.json();
+    toast(d.cleared && d.cleared.length ? "Cleared: panel + chat history" : "Panel cleared (no saved history for this session)");
+  } catch (e) {
+    toast("Panel cleared, but history cleanup failed: " + (e && e.message ? e.message : e));
+  }
+});
 
 const sideEl = $("side");
-let sideOpen = innerWidth >= 1100;
+let sideOpen = (() => {
+  try {
+    const saved = localStorage.getItem("panelOpen");
+    if (saved === "1" || saved === "0") return saved === "1";
+  } catch (e) {}
+  return innerWidth >= 1100;
+})();
 
 function applySide() {
   sideEl.classList.toggle("hidden", !sideOpen);
@@ -685,6 +755,7 @@ function applySide() {
   tab.classList.toggle("open", sideOpen);
   tab.title = sideOpen ? "Hide conversation" : "Show conversation";
   tab.setAttribute("aria-expanded", String(sideOpen));
+  try { localStorage.setItem("panelOpen", sideOpen ? "1" : "0"); } catch (e) {}
 }
 
 $("sidetab").addEventListener("click", () => {
@@ -865,9 +936,10 @@ addEventListener("orientationchange", () => setTimeout(() => { fitCanvas(); appl
 fitCanvas();
 applySide();
 
-let phase = 0;
+let phase = 0, spin = 0;
 function draw() {
   phase += 0.015;
+  if (live) spin += 0.015; // the ring only rotates while a call is live
   try {
     if (agentAn && agentData) agentAn.getByteFrequencyData(agentData);
     if (micAn && micData) micAn.getByteFrequencyData(micData);
@@ -910,7 +982,7 @@ function drawOrb() {
 
   const bars = 72;
   for (let i = 0; i < bars; i++) {
-    const ang = (i / bars) * Math.PI * 2 + phase * 0.4;
+    const ang = (i / bars) * Math.PI * 2 + spin * 0.4;
     const v = agentData
       ? agentData[Math.floor(i / bars * agentData.length * 0.7)] / 255
       : 0;
@@ -920,7 +992,7 @@ function drawOrb() {
     const y1 = cy + Math.sin(ang) * r * 0.72;
     const x2 = cx + Math.cos(ang) * (r * 0.72 + len);
     const y2 = cy + Math.sin(ang) * (r * 0.72 + len);
-    const hue = 215 + Math.sin(i * 0.35 + phase) * 28;
+    const hue = 215 + Math.sin(i * 0.35 + spin) * 28;
     sctx.strokeStyle = "hsla(" + hue + ", 90%, " + (62 + v * 22) + "%, " + (0.35 + v * 0.65) + ")";
     sctx.lineWidth = 2.4 * devicePixelRatio;
     sctx.lineCap = "round";
@@ -1073,8 +1145,9 @@ async function loadHistoryList() {
       prev.className = "sprev";
       prev.textContent = s.first || "(no user text)";
       div.appendChild(title); div.appendChild(date); div.appendChild(prev);
+      div.title = "Open this conversation in the panel";
       div.addEventListener("click", () => {
-        loadHistorySession(s.file).catch((e) => toast("History error: " + e.message));
+        loadHistoryIntoPanel(s.file).catch((e) => toast("History error: " + e.message));
       });
       body.appendChild(div);
     });
@@ -1087,53 +1160,34 @@ async function loadHistoryList() {
   }
 }
 
-function backLink(body) {
-  const span = document.createElement("span");
-  span.className = "backlink";
-  span.textContent = "\u2190 back to list";
-  span.addEventListener("click", () => {
-    loadHistoryList().catch((e) => toast("History error: " + e.message));
-  });
-  body.appendChild(span);
-}
-
-async function loadHistorySession(file) {
+async function loadHistoryIntoPanel(file) {
   const body = $("histbody");
   body.innerHTML = '<div class="empty">loading...</div>';
   try {
     const d = await fetchJson("/api/chat/session?file=" + encodeURIComponent(file));
     if (d.error) throw new Error(d.error);
-    body.innerHTML = "";
-    backLink(body);
-    if (!(d.messages || []).length) {
-      const none = document.createElement("div");
-      none.className = "empty";
-      none.textContent = "This session has no messages.";
-      body.appendChild(none);
-      return;
-    }
-    d.messages.forEach((m) => {
+    const msgs = d.messages || [];
+    resetTranscript();
+    msgs.forEach((m, i) => {
       const div = document.createElement("div");
-      div.className = "histmsg " + (m.who === "user" ? "user" : "bot");
-      const who = document.createElement("span");
-      who.className = "hm-who";
-      who.textContent = m.who === "user" ? "you" : "assistant";
-      const ts = document.createElement("span");
-      ts.className = "hm-ts";
-      ts.textContent = m.ts || "";
-      const txt = document.createElement("div");
-      txt.className = "hm-text";
-      txt.textContent = m.text;
-      div.appendChild(who); div.appendChild(ts); div.appendChild(txt);
-      body.appendChild(div);
+      div.className = "msg " + (m.who === "user" ? "you" : "bot");
+      div.textContent = m.text;
+      $("transcript").appendChild(div);
+      bubbles["h" + i] = div;
     });
+    setHistMode(file);
+    sideOpen = true;
+    applySide();
+    closeModal("histsheet");
+    if (msgs.length) $("transcript").scrollTop = $("transcript").scrollHeight;
+    else toast("This session has no messages");
   } catch (e) {
     body.innerHTML = "";
-    backLink(body);
     const err = document.createElement("div");
     err.className = "empty";
     err.textContent = "Failed: " + (e && e.message ? e.message : e);
     body.appendChild(err);
+    throw e;
   }
 }
 
