@@ -564,6 +564,7 @@ async def api_chat_session(request: web.Request) -> web.Response:
                     msgs.append({
                         "who": who, "text": rec["text"],
                         "ts": rec.get("ts", ""), "id": rec.get("id", ""),
+                        "think": rec.get("think", ""),
                     })
                 elif who == "system":
                     msgs.append({
@@ -622,6 +623,7 @@ async def api_config_post(request: web.Request) -> web.Response:
     allowed = set(current) | {
         "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
         "TEXTGEN_BASE_URL", "TEXTGEN_API_KEY", "TEXTGEN_MODEL", "LLM_STREAMING",
+        "LLM_THINKING", "LLM_SPEAK_THINKING",
         "WHISPER_MODEL", "WHISPER_DEVICE", "WHISPER_COMPUTE", "WHISPER_LANGUAGE",
         "WHISPER_BEAM", "WHISPER_VAD_FILTER", "WHISPER_TEMPERATURE",
         "WHISPER_MIN_LOGPROB", "WHISPER_MAX_COMPRATIO",
@@ -656,6 +658,66 @@ async def api_heartbeat(_request: web.Request) -> web.Response:
     _LAST_BEAT = _monotonic()
     _CLOSE_PENDING_AT = 0.0  # a fresh beat means the page did NOT close
     return web.Response(status=204)
+
+
+async def api_check(_request: web.Request) -> web.Response:
+    """The panel's refresh button: a MANUAL check of everything at once.
+
+    Unlike the periodic /health poll this also verifies the chat log folder is
+    actually writable (the .jsonl save path) and reports fresh results.
+    """
+    lk_host, lk_port = livekit_target()
+    lk_up = await asyncio.to_thread(_tcp_alive, lk_host, lk_port)
+    textgen_state = await asyncio.to_thread(check_textgen)
+    gpu_state = await asyncio.to_thread(check_gpu)
+    try:
+        kids = {name: ("up" if p.poll() is None else f"exit {p.returncode}")
+                for name, p in CHILDREN.items()}
+    except Exception:
+        kids = {}
+    lib_ok = (WEB_DIR / "livekit-client.js").is_file()
+    env_ok = ENV_FILE.is_file()
+    # write probe: proves the chat history .jsonl can actually be saved
+    chat_ok, chat_why = True, ""
+    try:
+        CHAT_DIR.mkdir(parents=True, exist_ok=True)
+        probe = CHAT_DIR / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        chat_ok, chat_why = False, str(exc)[:160]
+    n_logs = 0
+    try:
+        n_logs = sum(1 for _ in CHAT_DIR.glob("*.jsonl")) if CHAT_DIR.is_dir() else 0
+    except OSError:
+        pass
+    return web.json_response({
+        "livekit": {"status": "up" if lk_up else "down",
+                    "url": setting("LIVEKIT_URL")},
+        "textgen": {"status": textgen_state, "url": setting("TEXTGEN_BASE_URL")},
+        "gpu": gpu_state,
+        "children": kids,
+        "lib_file": {"exists": lib_ok},
+        "env_file": {"exists": env_ok},
+        "chat_log": {"writable": chat_ok, "error": chat_why, "files": n_logs},
+    })
+
+
+async def api_restart(_request: web.Request) -> web.Response:
+    """Restart EVERYTHING (LiveKit server + agent worker) from the Settings
+    panel. The supervisor's watch threads respawn both children with a fresh
+    settings read - the UI polls /health until the agent is back."""
+    if not CHILDREN:
+        return web.json_response({"error": "nothing is running"}, status=409)
+    names = list(CHILDREN.keys())
+    for name in names:
+        _RESTART[name] = 1  # the watch thread respawns it after ~1 s
+        try:
+            CHILDREN[name].terminate()
+        except OSError:
+            pass
+    log(f"restart requested from the UI - respawning: {', '.join(names)}")
+    return web.json_response({"ok": True, "restarting": names})
 
 
 async def api_window_closing(_request: web.Request) -> web.Response:
@@ -1406,6 +1468,8 @@ def build_app() -> web.Application:
     app.router.add_get("/api/chat/sessions", api_chat_sessions)
     app.router.add_get("/api/chat/session", api_chat_session)
     app.router.add_post("/api/chat/clear", api_chat_clear)
+    app.router.add_get("/api/check", api_check)
+    app.router.add_post("/api/restart", api_restart)
     app.router.add_post("/api/heartbeat", api_heartbeat)
     app.router.add_post("/api/window/closing", api_window_closing)
     app.router.add_get("/favicon.ico", favicon)

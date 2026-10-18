@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("voice-agent")
 
-from local_llm import create_textgen_llm, mask_key, relay_llm  # noqa: E402
+from local_llm import create_textgen_llm, mask_key  # noqa: E402
 from local_stt import create_stt  # noqa: E402
 from local_tts import create_piper_tts  # noqa: E402
 
@@ -93,6 +93,8 @@ CONFIG_DEFAULTS = {
     "TEXTGEN_API_KEY": "sk-1234",
     "TEXTGEN_MODEL": "local-model",
     "LLM_STREAMING": "0",
+    "LLM_THINKING": "0",
+    "LLM_SPEAK_THINKING": "0",
     "WHISPER_MODEL": "small",
     "WHISPER_DEVICE": "auto",
     "WHISPER_COMPUTE": "auto",
@@ -258,11 +260,13 @@ class TranscriptHub:
         self._seq = 0
         self._tasks = set()
         self._history = None
+        self._history_path = None
         self._written = 0
         if history_path is not None:
             try:
                 CHAT_DIR.mkdir(parents=True, exist_ok=True)
-                self._history = open(history_path, "a", encoding="utf-8")
+                self._history_path = Path(history_path)
+                self._history = open(self._history_path, "a", encoding="utf-8")
                 logger.info("Chat log: %s", history_path)
                 # Session-start marker: the UI shows a small divider so a
                 # long-lived conversation file stays readable across sittings.
@@ -270,16 +274,29 @@ class TranscriptHub:
             except OSError as exc:
                 logger.warning("Chat log disabled (%s)", exc)
 
-    def _write_history(self, who: str, text: str, msg_id: str) -> None:
-        if self._history is None:
+    def _write_history(self, who: str, text: str, msg_id: str, think: str = "") -> None:
+        # Every record is written immediately, flushed AND fsynced, and the
+        # file is reopened on demand: even if the job is being torn down, or
+        # the file handle was closed a moment ago, the message still lands on
+        # disk (this file IS the user's conversation history).
+        if self._history_path is None:
             return
+        rec = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "who": who,
+            "text": text,
+            "id": msg_id,
+        }
+        if think:
+            rec["think"] = think
         try:
-            line = json.dumps({
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "who": who,
-                "text": text,
-                "id": msg_id,
-            }, ensure_ascii=False)
+            if self._history is None:
+                try:
+                    self._history = open(self._history_path, "a", encoding="utf-8")
+                except OSError as exc:
+                    logger.warning("chat history reopen failed (%s)", exc)
+                    return
+            line = json.dumps(rec, ensure_ascii=False)
             self._history.write(line + "\n")
             self._history.flush()
             # fsync: the record must survive even a hard kill (window closed,
@@ -289,17 +306,21 @@ class TranscriptHub:
         except OSError as exc:
             logger.warning("chat history write failed (%s)", exc)
 
-    def _send(self, who: str, text: str, msg_id: str, final: bool) -> None:
+    def _send(self, who: str, text: str, msg_id: str, final: bool,
+              think: str = "") -> None:
         # Only finalized messages go to the history file. Streaming partials
         # (final=False) previously wrote every growing prefix as its own line,
         # so saved conversations looked like "only the first part" of each
         # message repeated over and over.
         if final:
-            self._write_history(who, text, msg_id)
-        payload = json.dumps({"who": who, "text": text, "id": msg_id, "final": final})
+            self._write_history(who, text, msg_id, think)
+        payload = {"who": who, "text": text, "id": msg_id, "final": final}
+        if think:
+            payload["think"] = think
         try:
             coro = self._room.local_participant.publish_data(
-                payload, reliable=True, topic="transcript")
+                json.dumps(payload, ensure_ascii=False),
+                reliable=True, topic="transcript")
         except Exception as exc:
             logger.warning("transcript publish failed (%s)", exc)
             return
@@ -318,6 +339,27 @@ class TranscriptHub:
         if not task.cancelled() and task.exception():
             logger.warning("transcript publish failed (%s)", task.exception())
 
+    def think(self, text: str, msg_id: str, final: bool) -> None:
+        """Live thinking-process update: published to the UI only (never
+        written to the .jsonl - the final bot record carries the full think)."""
+        payload = json.dumps({"who": "bot", "text": "", "id": msg_id,
+                              "final": False, "think": text or "",
+                              "think_final": final})
+        try:
+            coro = self._room.local_participant.publish_data(
+                payload, reliable=True, topic="transcript")
+        except Exception as exc:
+            logger.warning("thinking publish failed (%s)", exc)
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return
+        task = loop.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._on_pub_done)
+
     def user(self, text: str) -> None:
         text = (text or "").strip()
         if text:
@@ -326,10 +368,11 @@ class TranscriptHub:
             self._send("user", text, msg_id, True)
             logger.info("user said: %s", text)
 
-    def bot(self, text: str, msg_id: str = "", final: bool = True) -> None:
+    def bot(self, text: str, msg_id: str = "", final: bool = True,
+            think: str = "") -> None:
         text = (text or "").strip()
-        if text:
-            self._send("bot", text, msg_id, final)
+        if text or think:
+            self._send("bot", text, msg_id, final, think)
 
     def system_note(self, text: str) -> None:
         """A non-conversation line (e.g. an LLM error) saved to the .jsonl so
@@ -348,6 +391,8 @@ class TranscriptHub:
             logger.info("Chat log closed: %d record(s) written this session",
                         self._written)
             self._history = None
+            # _history_path stays set: a late on_reply (an LLM answer landing
+            # after the room closed) reopens the file and is still saved.
 
 
 def build_vad(cfg: dict):
@@ -382,7 +427,7 @@ def build_tts(cfg: dict):
     )
 
 
-def build_llm(cfg: dict, publish_reply=None, on_error=None):
+def build_llm(cfg: dict, publish_reply=None, publish_think=None, on_error=None):
     base = cfg.get("TEXTGEN_BASE_URL", "http://127.0.0.1:5000/v1")
     raw_key = (cfg.get("TEXTGEN_API_KEY", "") or "").strip()
     # The openai client insists on a non-empty key; servers without auth
@@ -391,27 +436,16 @@ def build_llm(cfg: dict, publish_reply=None, on_error=None):
     key = raw_key or "sk-no-key"
     model = cfg.get("TEXTGEN_MODEL", "local-model")
     streaming = cfg.get("LLM_STREAMING", "0") == "1"
-    logger.info("LLM API: %s (key %s, model=%s, %s)",
+    thinking = cfg.get("LLM_THINKING", "0") == "1"
+    speak_thinking = thinking and cfg.get("LLM_SPEAK_THINKING", "0") == "1"
+    logger.info("LLM API: %s (key %s, model=%s, %s%s)",
                 base, mask_key(raw_key) if raw_key else "(none)", model,
-                "token streaming" if streaming else "full-reply mode")
-    if streaming:
-        try:
-            import openai as _openai
-
-            from local_llm import PROVIDER_HEADERS
-
-            client = _openai.AsyncClient(
-                base_url=base, api_key=key,
-                default_headers=PROVIDER_HEADERS, max_retries=2,
-            )
-            inner = openai.LLM(client=client, model=model)
-        except Exception:
-            inner = openai.LLM(base_url=base, api_key=key, model=model)
-        if publish_reply:
-            return relay_llm(inner, publish_reply, on_error=on_error)
-        return inner
-    return create_textgen_llm(base_url=base, api_key=key, model=model,
-                              on_reply=publish_reply, on_error=on_error)
+                "token streaming" if streaming else "full-reply mode",
+                ", thinking on" if thinking else "")
+    return create_textgen_llm(
+        base_url=base, api_key=key, model=model,
+        streaming=streaming, thinking=thinking, speak_thinking=speak_thinking,
+        on_reply=publish_reply, on_think=publish_think, on_error=on_error)
 
 
 _MODELS = {"fp": None, "vad": None, "stt": None, "tts": None, "last_good": {}}
@@ -533,9 +567,36 @@ server = AgentServer(num_idle_processes=1)
 @server.rtc_session()
 async def voice_agent(ctx: agents.JobContext) -> None:
     hub = None
+    session = None
+    early_inputs: list[str] = []
     try:
         await ctx.connect()
         logger.info("Agent joined room %s", ctx.room.name)
+
+        # --- typed chat input: registered EARLY ------------------------------
+        # Messages typed before the models finish loading used to be dropped
+        # (no handler yet = nothing saved, nothing answered). They are now
+        # buffered and replayed as soon as the session is ready.
+        def _extract_text(payload: bytes) -> str:
+            try:
+                data = json.loads(bytes(payload).decode("utf-8"))
+            except Exception:
+                return ""
+            return (data.get("text") or "").strip() if isinstance(data, dict) else ""
+
+        def on_data_early(ev) -> None:
+            topic = getattr(ev, "topic", "") or ""
+            if topic != "chat-input":
+                return
+            raw = getattr(ev, "data", b"")
+            if isinstance(raw, str):
+                raw = raw.encode("utf-8")
+            text = _extract_text(raw)
+            if text:
+                early_inputs.append(text)
+
+        ctx.room.on("data_received")(on_data_early)
+
         cfg = load_config()
         try:
             vad, stt, tts = await asyncio.to_thread(get_models, cfg)
@@ -550,10 +611,14 @@ async def voice_agent(ctx: agents.JobContext) -> None:
         hub = TranscriptHub(ctx.room, history_path_for(ctx.room.name))
         guard = build_echo_guard(cfg)
 
-        def publish_bot(text: str, msg_id: str = "", final: bool = True) -> None:
-            hub.bot(text, msg_id, final)
+        def publish_bot(text: str, msg_id: str = "", final: bool = True,
+                        think: str = "") -> None:
+            hub.bot(text, msg_id, final, think)
             if guard is not None and final:
                 guard.note_spoken(text)
+
+        def publish_think(text: str, msg_id: str = "", final: bool = False) -> None:
+            hub.think(text, msg_id, final)
 
         def on_llm_error(detail: str) -> None:
             # Keep the .jsonl truthful: the turn HAS a user line, so record
@@ -566,7 +631,8 @@ async def voice_agent(ctx: agents.JobContext) -> None:
             hub.system_note("llm error - this turn was not answered: " + detail[:300])
 
         cfg = fix_local_model_name(cfg)
-        llm = build_llm(cfg, publish_reply=publish_bot, on_error=on_llm_error)
+        llm = build_llm(cfg, publish_reply=publish_bot, publish_think=publish_think,
+                        on_error=on_llm_error)
 
         stream_stt = lk_stt.StreamAdapter(stt=stt, vad=vad)
         if guard is not None:
@@ -618,24 +684,45 @@ async def voice_agent(ctx: agents.JobContext) -> None:
 
         session.on("user_input_transcribed")(on_user_transcript)
 
+        # --- final data handler: replaces the early one ----------------------
+        # chat-input  -> answer the message (also replays early buffered ones)
+        # ctx-clear   -> wipe the MODEL context: the Clear button must reset
+        #                what the LLM remembers, not just the UI
+        def clear_model_context() -> None:
+            try:
+                # truncate keeps the leading instructions (the assistant's
+                # persona) but removes every conversational item
+                session.history.truncate(max_items=0)
+                logger.info("model context cleared (Clear button)")
+            except Exception:
+                logger.exception("clearing model context failed")
+
         def on_data(ev) -> None:
             topic = getattr(ev, "topic", "") or ""
+            if topic == "ctx-clear":
+                clear_model_context()
+                hub.system_note("conversation cleared (model context reset)")
+                return
             if topic != "chat-input":
                 return
             raw = getattr(ev, "data", b"")
             if isinstance(raw, str):
                 raw = raw.encode("utf-8")
-            try:
-                payload = json.loads(bytes(raw).decode("utf-8"))
-            except Exception:
-                return
-            text = (payload.get("text") or "").strip() if isinstance(payload, dict) else ""
+            text = _extract_text(raw)
             if not text:
                 return
             hub.user(text)
             asyncio.ensure_future(reply_to_text(session, text))
 
         ctx.room.on("data_received")(on_data)
+
+        if early_inputs:
+            logger.info("replaying %d message(s) typed while models loaded",
+                        len(early_inputs))
+            for text in list(early_inputs):
+                hub.user(text)
+                asyncio.ensure_future(reply_to_text(session, text))
+            early_inputs.clear()
 
         if guard is not None:
             session.on("agent_state_changed")(guard.on_agent_state)

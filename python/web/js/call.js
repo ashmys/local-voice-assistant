@@ -44,7 +44,14 @@ async function connect() {
     if (topic !== "transcript") return;
     try {
       const m = JSON.parse(new TextDecoder().decode(payload));
-      if (m && typeof m.text === "string") addBubble(m.who, m.text, m.id, m.final !== false);
+      if (m && typeof m.text === "string") {
+        addBubble(m.who, m.text, m.id, m.final !== false,
+                  typeof m.think === "string" ? m.think : undefined,
+                  m.think_final === true);
+      } else if (m && typeof m.think === "string") {
+        // thinking-only update (answer text not started yet)
+        addBubble("bot", "", m.id, false, m.think, m.think_final === true);
+      }
     } catch (e) {
       console.warn("bad transcript packet", e);
     }

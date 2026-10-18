@@ -79,6 +79,12 @@
             <select id="micdevice"><option value="">System default</option></select>
           </div>
           <div class="sect">Language model (OpenAI-compatible)</div>
+          <div class="field">
+            <label>Provider profile <button type="button" class="minibtn" id="profsave" title="Store the current URL / key / model under this name">save</button> <button type="button" class="minibtn" id="profdelete" title="Delete this profile">delete</button></label>
+            <input type="text" id="profilename" list="profilelist" placeholder="Type or pick a profile (e.g. OpenRouter free, Local Llama...)">
+            <datalist id="profilelist"></datalist>
+            <div class="hint">Pick a profile to load its URL / key / model instantly. Changes to the base URL, API key or model name below save automatically - both to the app settings and to the active profile. "save" stores the current settings as a profile; "delete" removes the active one.</div>
+          </div>
           <div class="field"><label>API base URL (localhost or cloud)</label>
             <input type="text" id="cfg-TEXTGEN_BASE_URL" placeholder="http://127.0.0.1:5000/v1">
             <div class="hint">Local: textgen :5000/v1 &middot; LM Studio :1234/v1 &middot; Ollama :11434/v1 &middot; llama.cpp :8080/v1<br>Cloud: https://api.openai.com/v1 &middot; https://api.groq.com/openai/v1 &middot; https://openrouter.ai/api/v1</div>
@@ -93,6 +99,14 @@
           </div>
           <div class="field"><label>Token streaming</label>
             <select id="cfg-LLM_STREAMING"><option value="0">Full reply first (stable)</option><option value="1">Stream tokens (live text)</option></select>
+          </div>
+          <div class="field"><label>Thinking mode</label>
+            <select id="cfg-LLM_THINKING"><option value="0">Off (default)</option><option value="1">On (show the model's thinking)</option></select>
+            <div class="hint">When on, &lt;think&gt;...&lt;/think&gt; blocks and reasoning tokens are captured and shown as a collapsible "thinking" block in the conversation instead of being read aloud. Applies to the next conversation.</div>
+          </div>
+          <div class="field"><label>Speak the thinking out loud</label>
+            <select id="cfg-LLM_SPEAK_THINKING"><option value="0">No (default - keep it silent)</option><option value="1">Yes (read the thinking before the answer)</option></select>
+            <div class="hint">Only used when thinking mode is on. Off keeps the thinking text silent and on-screen only.</div>
           </div>
         </div>
 
@@ -187,6 +201,10 @@
             <div class="hint">A separate profile keeps the app window its own browser instance: instant close detection, and closing the terminal closes the window too. Mic permission is asked once inside that profile.</div>
           </div>
           <div class="sect">Advanced</div>
+          <div class="field"><label>Restart everything</label>
+            <button id="restartbtn" type="button">Restart LiveKit + agent</button>
+            <div class="hint">Stops and restarts the LiveKit server and the agent worker with the current saved settings. Useful after a config change that does not want to apply, or if a service looks stuck. The conversation panel stays open.</div>
+          </div>
           <div class="field"><label>Log level (needs agent restart)</label>
             <select id="cfg-LOG_LEVEL"><option value="DEBUG">DEBUG</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select>
           </div>
@@ -210,11 +228,24 @@
     <div class="modalbox small">
       <div class="modalhead"><h2>Clear conversation?</h2><button class="closebtn" id="clearno">&times;</button></div>
       <div class="modalbody">
-        <p id="cleartext">This empties the conversation panel and erases this conversation's saved messages (this room's chat log file). This cannot be undone.</p>
+        <p id="cleartext">This empties the conversation panel, erases this conversation's saved messages (this room's chat log file) and resets the model's memory of the conversation. This cannot be undone.</p>
       </div>
       <div class="savebar btnrow">
         <button id="clearno2" class="halfbtn" type="button">Cancel</button>
         <button id="clearyes" class="dangerbtn" type="button">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="restartsheet">
+    <div class="modalbox small">
+      <div class="modalhead"><h2>Restart everything?</h2><button class="closebtn" id="restartno">&times;</button></div>
+      <div class="modalbody">
+        <p id="restarttext">The LiveKit server and the agent worker will stop and start again with your saved settings. This takes a few seconds (models reload). Any ongoing call ends.</p>
+      </div>
+      <div class="savebar btnrow">
+        <button id="restartno2" class="halfbtn" type="button">Cancel</button>
+        <button id="restartyes" class="dangerbtn" type="button">Restart</button>
       </div>
     </div>
   </div>

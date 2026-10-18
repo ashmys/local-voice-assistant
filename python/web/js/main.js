@@ -106,10 +106,24 @@ $("gearbtn").addEventListener("click", async () => {
 });
 $("closegear").addEventListener("click", () => closeModal("settingsheet"));
 document.querySelectorAll(".modal").forEach((m) => {
-  m.addEventListener("click", (ev) => { if (ev.target === m) m.classList.remove("open"); });
+  // Backdrop click closes - but ONLY when both press AND release happened on
+  // the backdrop. Pressing inside the panel (e.g. selecting text or using a
+  // slider) and dragging out of it used to close the panel and lose context.
+  let downOnBackdrop = false;
+  m.addEventListener("mousedown", (ev) => { downOnBackdrop = ev.target === m; });
+  m.addEventListener("click", (ev) => {
+    if (ev.target === m && downOnBackdrop) closeModal(m.id);
+  });
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") document.querySelectorAll(".modal.open").forEach((m) => m.classList.remove("open"));
+  if (ev.key === "Escape") document.querySelectorAll(".modal.open").forEach((m) => closeModal(m.id));
+});
+
+// Leaving the settings panel saves whatever is in the form right now, so
+// in-progress changes are never lost (auto-save also runs while editing).
+// modalclose fires from closeModal() - covers the X button, backdrop and Esc.
+$("settingsheet").addEventListener("modalclose", () => {
+  if (typeof saveSettings === "function") saveSettings(true);
 });
 
 document.querySelectorAll(".tab").forEach((btn) => {

@@ -3,8 +3,16 @@
   --bg: #0a0c12; --fg: #e8eaf2; --dim: #8b93a7;
   --accent: #6ea8ff; --accent2: #9b7bff; --ok: #4ade80; --warn: #fbbf24;
   --panel: rgba(16, 19, 28, 0.92); --line: rgba(255,255,255,0.08);
+  color-scheme: dark; /* dark native controls AND dark default scrollbars */
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; margin: 0; padding: 0;
+    scrollbar-color: #2c3346 rgba(16,19,28,0.6); /* Firefox: no white track */ }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: rgba(16,19,28,0.6); }
+*::-webkit-scrollbar-thumb { background: #2c3346; border-radius: 8px;
+  border: 2px solid rgba(16,19,28,0.6); }
+*::-webkit-scrollbar-thumb:hover { background: #3d465e; }
+*::-webkit-scrollbar-corner { background: rgba(16,19,28,0.6); }
 html, body { height: 100%; }
 body {
   background: radial-gradient(1200px 800px at 50% 30%, #121625 0%, var(--bg) 60%);
@@ -106,6 +114,24 @@ body.panel-open #sidetab { left: min(340px, 42vw); }
 .msg.pending { opacity: .65; }
 .msg.sys { align-self: center; background: none; border: none; color: var(--dim);
   font-size: 10.5px; letter-spacing: .06em; padding: 2px 0 0; opacity: .8; max-width: 100%; }
+/* collapsible thinking block inside a bot bubble (thinking mode) */
+.msg details.think {
+  width: 100%; margin: 0 0 6px; border: 1px solid rgba(155,123,255,.3);
+  border-radius: 10px; background: rgba(155,123,255,.08);
+  overflow: hidden;
+}
+.msg details.think summary {
+  cursor: pointer; user-select: none; -webkit-user-select: none;
+  padding: 4px 10px; font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--accent2);
+}
+.msg details.think summary:hover { color: var(--fg); }
+.msg details.think .thinkbody {
+  padding: 6px 10px 8px; font-size: 12px; line-height: 1.5;
+  color: var(--dim); white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow-y: auto;
+}
+.msg .txt { white-space: pre-wrap; word-break: break-word; }
 .loadearlier {
   align-self: center; background: rgba(110,168,255,.10); border: 1px solid rgba(110,168,255,.30);
   color: var(--accent); border-radius: 999px; font-size: 11.5px; padding: 4px 14px;
@@ -189,6 +215,16 @@ select option { background: #10131c; color: var(--fg); }
 }
 #savebtn:hover { box-shadow: 0 0 24px rgba(110,168,255,.3); }
 #savemsg { text-align: center; font-size: 12.5px; margin-top: 8px; min-height: 16px; color: var(--ok); }
+
+/* restart-everything button (Settings -> Advanced) */
+#restartbtn {
+  width: 100%; padding: 11px; border-radius: 12px;
+  border: 1px solid rgba(251,191,36,.5); background: rgba(251,191,36,.10);
+  color: var(--warn); font-size: 14px; font-weight: 600; cursor: pointer;
+}
+#restartbtn:hover { background: rgba(251,191,36,.2); }
+#restartbtn:disabled { opacity: .5; cursor: wait; }
+#restarttext, #cleartext { color: var(--fg); font-size: 13.5px; line-height: 1.6; }
 
 .sess { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
   margin-bottom: 10px; cursor: pointer; transition: border-color .15s; }

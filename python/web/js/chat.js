@@ -4,14 +4,17 @@
    The panel does NOT render the whole conversation: it keeps the full message
    array in memory and only mounts a window of DOM nodes at the tail, loading
    earlier chunks while you scroll up (IntersectionObserver on a sentinel).
-   Live/streaming messages update in place via upsert(). */
+   Live/streaming messages update in place via upsert().
+
+   Bot bubbles can carry a collapsible "thinking" block (thinking mode):
+   item = {key, who, text, final, ts, system, think, thinkFinal}. */
 
 const CHUNK = 60; // messages per rendered window
 
 class ChatList {
   constructor(container) {
     this.el = container;
-    this.items = [];          // full message array: {key, who, text, final, ts, system}
+    this.items = [];          // full message array
     this.start = 0;           // index of the first RENDERED item
     this.nodeByKey = new Map();
     this.itemByKey = new Map();
@@ -119,13 +122,11 @@ class ChatList {
     const known = this.itemByKey.get(it.key);
     const node = this.nodeByKey.get(it.key);
     if (!known) { this.append(it); return; }
-    known.text = it.text;
-    known.final = it.final;
-    if (node) {
-      node.textContent = it.text || "";
-      node.classList.toggle("pending", it.final === false);
-      if (it.final !== false && this.pinned) this.scrollBottom();
-    }
+    if (it.text !== undefined) known.text = it.text;
+    if (it.final !== undefined) known.final = it.final;
+    if (it.think !== undefined) known.think = it.think;
+    if (it.thinkFinal !== undefined) known.thinkFinal = it.thinkFinal;
+    if (node) this._updateNode(node, known);
   }
 
   scrollBottom() {
@@ -147,28 +148,95 @@ class ChatList {
       return div;
     }
     div.className = "msg " + (it.who === "user" ? "you" : "bot");
-    div.textContent = it.text || "";
+    if (it.who === "bot" && it.think) {
+      const det = document.createElement("details");
+      det.className = "think";
+      const sum = document.createElement("summary");
+      sum.textContent = "thinking\u2026";
+      const body = document.createElement("div");
+      body.className = "thinkbody";
+      body.textContent = it.think;
+      det.appendChild(sum); det.appendChild(body);
+      div.appendChild(det);
+      // collapse once the real answer is streaming/complete
+      det.open = !(it.text && it.final !== false) && it.thinkFinal !== true;
+    }
+    const txt = document.createElement("div");
+    txt.className = "txt";
+    txt.textContent = it.text || "";
+    div.appendChild(txt);
     if (it.final === false) div.classList.add("pending");
     return div;
+  }
+
+  _updateNode(node, it) {
+    if (it.system) return;
+    const needsThink = it.who === "bot" && !!it.think;
+    const det = node.querySelector(":scope > .think");
+    if (needsThink && !det) {
+      // structure changed (thinking appeared) - rebuild the bubble
+      const fresh = this._makeNode(it);
+      node.replaceWith(fresh);
+      this.nodeByKey.set(it.key, fresh);
+      if (it.final !== false && this.pinned) this.scrollBottom();
+      return;
+    }
+    if (det) {
+      const open = !(it.text && it.final !== false) && it.thinkFinal !== true;
+      det.open = open;
+      det.querySelector(".thinkbody").textContent = it.think || "";
+      det.querySelector("summary").textContent = open ? "thinking\u2026" : "thought process";
+    }
+    const txt = node.querySelector(":scope > .txt");
+    if (txt) txt.textContent = it.text || "";
+    node.classList.toggle("pending", it.final === false);
+    if (it.final !== false && this.pinned) this.scrollBottom();
   }
 }
 
 const chatList = new ChatList($("transcript"));
 
-function addBubble(who, text, id, final) {
-  if (!text || !text.trim()) return null;
+/* Live messages are ALWAYS kept here, even while the user is browsing an old
+   session in history view - the history X button restores exactly this. */
+let liveItems = [];
+
+function trackLive(key, who, text, final, think, thinkFinal) {
+  const found = liveItems.find((it) => it.key === key);
+  if (found) {
+    if (text !== undefined) found.text = text;
+    if (final !== undefined) found.final = final;
+    if (think !== undefined) found.think = think;
+    if (thinkFinal !== undefined) found.thinkFinal = thinkFinal;
+    return found;
+  }
+  const it = { key, who, text: text || "", final: final !== false,
+               think: think || "", thinkFinal: thinkFinal === true };
+  liveItems.push(it);
+  return it;
+}
+
+function addBubble(who, text, id, final, think, thinkFinal) {
+  const hasThink = typeof think === "string";
+  if (!text && !hasThink) return null;
+  if (!text || !text.trim()) {
+    if (!hasThink) return null;
+    text = "";
+  }
   final = final !== false;
   if (who === "user" && final && id && !id.startsWith("loc")) {
     if (text === lastEcho.text && Date.now() - lastEcho.at < 8000) return null;
   }
   const key = id || ("m" + (++msgCounter));
-  chatList.upsert({ key, who, text, final });
-  if (final) pulseState(who === "bot" ? "speaking" : "thinking");
+  const it = trackLive(key, who, text, final, think, thinkFinal);
+  chatList.upsert({ key, who, text: it.text, final: it.final,
+                    think: it.think, thinkFinal: it.thinkFinal });
+  if (final && it.text) pulseState(who === "bot" ? "speaking" : "thinking");
   return chatList.nodeByKey.get(key) || null;
 }
 
 function resetTranscript() {
   chatList.reset();
+  liveItems = [];
   if (viewingFile) setHistMode(null);
 }
 
@@ -177,25 +245,27 @@ function setHistMode(file) {
   $("histmode").classList.toggle("show", !!viewingFile);
 }
 
-// Leaving history view goes back to the LIVE conversation - rebuild it from
-// the saved log (which now contains everything received this sitting) instead
-// of showing an empty panel.
+/* Leaving history view goes back to the LIVE conversation: rebuild from the
+   in-memory live items (everything received this sitting) and, if the current
+   room has a saved log, merge what is already on disk behind them. */
 $("histmode").addEventListener("click", async () => {
   setHistMode(null);
+  chatList.reset();
   const r = currentRoom || savedRoom();
-  if (!r) { resetTranscript(); toast("Back to the live conversation view"); return; }
+  // start with what we have in memory right now
+  const memory = liveItems.slice();
+  let saved = [];
   try {
-    const msgs = await fetchSavedHistory(r);
-    const pending = chatList.items.filter((it) => it.final === false);
-    chatList.setAll(historyItems(msgs));
-    pending.forEach((it) => chatList.append(it));
-    chatList.scrollBottom();
-    toast("Back to the live conversation view");
-  } catch (e) {
-    resetTranscript();
-    toast("Back to live view (could not reload the saved log: " +
-          (e && e.message ? e.message : e) + ")");
-  }
+    if (r) saved = await fetchSavedHistory(r);
+  } catch (e) { /* disk may be empty - memory still shows */ }
+  // merge: saved log first (dedup by key against live ids u*/b*), then memory
+  const seen = new Set(memory.map((it) => it.key));
+  const merged = historyItems(saved).filter((it) => !seen.has(it.key)).concat(memory);
+  chatList.setAll(merged);
+  // re-apply live streaming state on top of the saved snapshot
+  chatList.scrollBottom();
+  toast(memory.length ? "Back to the current conversation"
+                      : "Back to the live view (this conversation is empty)");
 });
 
 // ---- persistent room: one chat log per browser, resumed across restarts ----
@@ -221,7 +291,8 @@ function historyItems(msgs) {
     if (!key || taken.has(key)) key = "h:" + i;
     taken.add(key);
     out[i] = { key, who: m.who, text: m.text, final: true,
-               ts: m.ts, system: m.who === "system" };
+               ts: m.ts, system: m.who === "system",
+               think: m.think || "", thinkFinal: true };
   }
   return out;
 }
@@ -232,42 +303,72 @@ async function fetchSavedHistory(room) {
   return d.messages || [];
 }
 
-// ---- manual refresh: reload the chat log from disk into the panel ----
-async function refreshPanel() {
+// ---- refresh button = MANUAL CHECK OF EVERYTHING ---------------------------
+// (auto checks keep running every 15 s; this button runs the same checks
+// right now on demand, plus a chat-log write probe and a log reload)
+async function manualCheckAll() {
+  const btn = $("refreshhist");
+  btn.disabled = true;
   try {
-    if (viewingFile) {
-      const d = await fetchJson("/api/chat/session?file=" + encodeURIComponent(viewingFile));
-      if (d.error) throw new Error(d.error);
-      const msgs = d.messages || [];
-      chatList.setAll(historyItems(msgs));
-      chatList.scrollBottom();
-      toast("Reloaded " + (msgs.length) + " saved messages");
-      return;
+    let c = null;
+    try { c = await fetchJson("/api/check"); } catch (e) { /* fall through */ }
+    checkHealth();
+    let parts = [];
+    if (c) {
+      const lk = c.livekit && c.livekit.status === "up";
+      const tg = c.textgen && String(c.textgen.status || "").startsWith("up");
+      const ag = c.children && c.children.agent === "up";
+      const cl = c.chat_log && c.chat_log.writable;
+      parts = [
+        "livekit " + (lk ? "up" : "DOWN"),
+        "llm " + (tg ? "up" : "DOWN"),
+        "agent " + (ag ? "up" : "down"),
+        "chat log " + (cl ? "writable" : "WRITE BLOCKED"),
+      ];
+      if (c.textgen && !tg) parts.push("(" + (c.textgen.status || "?") + ")");
+      if (c.chat_log && !cl) parts.push("(" + (c.chat_log.error || "?") + ")");
     }
-    const r = currentRoom || savedRoom();
-    if (!r) { toast("No saved conversation yet"); return; }
-    const msgs = await fetchSavedHistory(r);
-    if (!msgs.length) { toast("The saved log for this room is empty"); return; }
-    // Streaming partials are not on disk yet - keep them on top of the log.
-    const pending = chatList.items.filter((it) => it.final === false);
-    setHistMode(null);
-    chatList.setAll(historyItems(msgs));
-    pending.forEach((it) => chatList.append(it));
-    chatList.scrollBottom();
-    toast("Chat log reloaded (" + msgs.length + " saved messages)");
-  } catch (e) {
-    toast("Refresh failed: " + (e && e.message ? e.message : e));
+    // reload the visible conversation from disk
+    try {
+      if (viewingFile) {
+        const d = await fetchJson("/api/chat/session?file=" + encodeURIComponent(viewingFile));
+        if (d.error) throw new Error(d.error);
+        chatList.setAll(historyItems(d.messages || []));
+        chatList.scrollBottom();
+      } else {
+        const r = currentRoom || savedRoom();
+        if (r) {
+          const msgs = await fetchSavedHistory(r);
+          const pending = liveItems.filter((it) => it.final === false);
+          setHistMode(null);
+          chatList.setAll(mergedLiveSaved(msgs));
+          pending.forEach((it) => chatList.append(it));
+          chatList.scrollBottom();
+        }
+      }
+    } catch (e) { parts.push("log reload failed: " + (e && e.message ? e.message : e)); }
+    toast(parts.length ? "Checked: " + parts.join(" \u00b7 ") : "Checked (server unreachable)", 4200);
+  } finally {
+    btn.disabled = false;
   }
 }
 
-$("refreshhist").addEventListener("click", () => { refreshPanel(); });
+function mergedLiveSaved(msgs) {
+  // saved log behind, live in-memory items on top (dedup by key)
+  const seen = new Set(liveItems.map((it) => it.key));
+  return historyItems(msgs).filter((it) => !seen.has(it.key)).concat(liveItems.slice());
+}
+
+$("refreshhist").addEventListener("click", () => { manualCheckAll(); });
 
 async function preloadSavedHistory() {
   const r = savedRoom();
   if (!r) return;
   try {
     const msgs = await fetchSavedHistory(r);
-    if (msgs.length) chatList.setAll(historyItems(msgs));
+    if (msgs.length) {
+      chatList.setAll(mergedLiveSaved(msgs));
+    }
   } catch (e) {
     console.warn("history preload failed", e);
   }
@@ -282,7 +383,17 @@ $("clearno").addEventListener("click", () => closeModal("clearsheet"));
 $("clearno2").addEventListener("click", () => closeModal("clearsheet"));
 $("clearyes").addEventListener("click", async () => {
   closeModal("clearsheet");
+  // 1) wipe the MODEL context (what the LLM remembers), not just the UI
+  try {
+    if (room && live) {
+      await room.localParticipant.publishData(
+        new TextEncoder().encode(JSON.stringify({ cmd: "clear-context" })),
+        { reliable: true, topic: "ctx-clear" });
+    }
+  } catch (e) { console.warn("ctx-clear failed", e); }
+  // 2) wipe the UI panel
   resetTranscript();
+  // 3) erase this room's saved chat log on disk
   if (!currentRoom) { toast("Conversation cleared"); return; }
   try {
     const r = await fetch("/api/chat/clear", {
@@ -295,7 +406,8 @@ $("clearyes").addEventListener("click", async () => {
       throw new Error(why);
     }
     const d = await r.json();
-    toast(d.cleared && d.cleared.length ? "Cleared: panel + saved history" : "Panel cleared (no saved history for this session)");
+    toast(d.cleared && d.cleared.length ? "Cleared: panel + saved history + model context"
+                                        : "Panel cleared (no saved history for this session)");
   } catch (e) {
     toast("Panel cleared, but history cleanup failed: " + (e && e.message ? e.message : e));
   }
@@ -393,7 +505,7 @@ async function loadHistoryIntoPanel(file) {
     const d = await fetchJson("/api/chat/session?file=" + encodeURIComponent(file));
     if (d.error) throw new Error(d.error);
     const msgs = d.messages || [];
-    resetTranscript();
+    chatList.reset();
     chatList.setAll(historyItems(msgs));
     setHistMode(file);
     sideOpen = true;

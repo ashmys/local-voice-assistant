@@ -51,7 +51,10 @@ function chip(name, ok, val) {
 }
 
 function openModal(id) { $(id).classList.add("open"); }
-function closeModal(id) { $(id).classList.remove("open"); }
+function closeModal(id) {
+  $(id).classList.remove("open");
+  try { $(id).dispatchEvent(new CustomEvent("modalclose")); } catch (e) {}
+}
 
 async function fetchJson(url) {
   const r = await fetch(url);
