@@ -10,6 +10,13 @@ from livekit.agents import APIConnectOptions, llm
 
 logger = logging.getLogger("local-llm")
 
+# OpenRouter asks cloud clients to identify themselves; every other
+# OpenAI-compatible server simply ignores these.
+PROVIDER_HEADERS = {
+    "HTTP-Referer": "http://127.0.0.1:8090",
+    "X-Title": "Local Voice Assistant",
+}
+
 
 def mask_key(key: str) -> str:
     if not key:
@@ -66,7 +73,10 @@ class TextgenLLM(llm.LLM):
         super().__init__()
         import openai
 
-        self._client = openai.OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+        self._client = openai.OpenAI(
+            base_url=base_url, api_key=api_key, max_retries=0,
+            default_headers=PROVIDER_HEADERS,
+        )
         self._model_name = model
         self.on_reply = on_reply
         logger.info("textgen LLM adapter ready (full-reply mode, model=%s)", model)
@@ -77,7 +87,7 @@ class TextgenLLM(llm.LLM):
 
     def complete(self, messages: list[dict]) -> str:
         r = self._client.chat.completions.create(
-            model=self._model_name, messages=messages, temperature=0.7, max_tokens=512
+            model=self._model_name, messages=messages, temperature=0.7, max_tokens=1024
         )
         return (r.choices[0].message.content or "").strip()
 
@@ -113,6 +123,12 @@ class RelayStream(llm.LLMStream):
                 self._event_ch.send_nowait(chunk)
             if self._sent and publish is not None:
                 publish(self._sent, self._msg_id, True)
+        except asyncio.CancelledError:
+            # The user interrupted the reply - still keep what was generated
+            # so the saved conversation is not missing this turn entirely.
+            if self._sent and publish is not None:
+                publish(self._sent, self._msg_id, True)
+            raise
         except Exception as exc:
             logger.warning("relay stream ended (%s)", exc)
             if self._sent and publish is not None:

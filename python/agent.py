@@ -143,6 +143,24 @@ def models_fingerprint(cfg: dict) -> str:
     return "|".join(cfg.get(k, "") for k in HEAVY_KEYS)
 
 
+def _num(cfg: dict, key: str, default: str, cast=float):
+    """Numeric setting that survives empty/garbage values.
+
+    The settings UI can save `KEY=` (empty). `cfg.get(key, default)` then
+    returns "" (the key exists!) and float("") used to crash every agent
+    session at model load. Empty or unparsable -> default, with a warning.
+    """
+    raw = str(cfg.get(key, "") or "").strip()
+    if not raw:
+        return cast(default)
+    try:
+        return cast(raw)
+    except ValueError:
+        logger.warning("Config %s=%r is not a valid number - using default %s",
+                       key, raw, default)
+        return cast(default)
+
+
 class EchoGuard:
     def __init__(self, tail: float = 0.8, threshold: float = 0.55) -> None:
         self._tail = max(0.0, tail)
@@ -196,7 +214,7 @@ def build_echo_guard(cfg: dict):
     if cfg.get("ECHO_GUARD", "1") != "1":
         logger.info("Echo guard disabled by settings (ECHO_GUARD=0)")
         return None
-    tail = float(cfg.get("ECHO_GUARD_TAIL", "0.8"))
+    tail = _num(cfg, "ECHO_GUARD_TAIL", "0.8")
     logger.info("Echo guard ON: agent-speech window + %.2fs tail", tail)
     return EchoGuard(tail=tail)
 
@@ -263,7 +281,12 @@ class TranscriptHub:
             logger.warning("chat history write failed (%s)", exc)
 
     def _send(self, who: str, text: str, msg_id: str, final: bool) -> None:
-        self._write_history(who, text, msg_id)
+        # Only finalized messages go to the history file. Streaming partials
+        # (final=False) previously wrote every growing prefix as its own line,
+        # so saved conversations looked like "only the first part" of each
+        # message repeated over and over.
+        if final:
+            self._write_history(who, text, msg_id)
         payload = json.dumps({"who": who, "text": text, "id": msg_id, "final": final})
         try:
             coro = self._room.local_participant.publish_data(
@@ -311,9 +334,9 @@ class TranscriptHub:
 def build_vad(cfg: dict):
     return silero.VAD.load(
         min_speech_duration=0.05,
-        min_silence_duration=float(cfg.get("VAD_MIN_SILENCE", "0.55")),
+        min_silence_duration=_num(cfg, "VAD_MIN_SILENCE", "0.55"),
         prefix_padding_duration=0.3,
-        activation_threshold=float(cfg.get("VAD_ACTIVATION_THRESHOLD", "0.45")),
+        activation_threshold=_num(cfg, "VAD_ACTIVATION_THRESHOLD", "0.45"),
         deactivation_threshold=0.35,
     )
 
@@ -324,18 +347,18 @@ def build_stt(cfg: dict):
         device=cfg.get("WHISPER_DEVICE", "auto"),
         compute_type=cfg.get("WHISPER_COMPUTE", "auto"),
         language=cfg.get("WHISPER_LANGUAGE", "en"),
-        beam_size=int(cfg.get("WHISPER_BEAM", "1")),
+        beam_size=_num(cfg, "WHISPER_BEAM", "1", int),
         vad_filter=cfg.get("WHISPER_VAD_FILTER", "0") == "1",
-        temperature=float(cfg.get("WHISPER_TEMPERATURE", "0.0")),
-        min_logprob=float(cfg.get("WHISPER_MIN_LOGPROB", "-1.0")),
-        max_compratio=float(cfg.get("WHISPER_MAX_COMPRATIO", "2.4")),
+        temperature=_num(cfg, "WHISPER_TEMPERATURE", "0.0"),
+        min_logprob=_num(cfg, "WHISPER_MIN_LOGPROB", "-1.0"),
+        max_compratio=_num(cfg, "WHISPER_MAX_COMPRATIO", "2.4"),
     )
 
 
 def build_tts(cfg: dict):
     return create_piper_tts(
         voice_name=cfg.get("TTS_VOICE", "en_US-amy-medium.onnx"),
-        speed=float(cfg.get("TTS_SPEED", "1.1")),
+        speed=_num(cfg, "TTS_SPEED", "1.1"),
     )
 
 
@@ -352,7 +375,18 @@ def build_llm(cfg: dict, publish_reply=None):
                 base, mask_key(raw_key) if raw_key else "(none)", model,
                 "token streaming" if streaming else "full-reply mode")
     if streaming:
-        inner = openai.LLM(base_url=base, api_key=key, model=model)
+        try:
+            import openai as _openai
+
+            from local_llm import PROVIDER_HEADERS
+
+            client = _openai.AsyncClient(
+                base_url=base, api_key=key,
+                default_headers=PROVIDER_HEADERS, max_retries=2,
+            )
+            inner = openai.LLM(client=client, model=model)
+        except Exception:
+            inner = openai.LLM(base_url=base, api_key=key, model=model)
         if publish_reply:
             return relay_llm(inner, publish_reply)
         return inner
@@ -456,7 +490,7 @@ async def voice_agent(ctx: agents.JobContext) -> None:
                 "turn_detection": None,
                 "endpointing": {
                     "mode": "fixed",
-                    "min_delay": float(cfg.get("ENDPOINTING_DELAY", "0.7")),
+                    "min_delay": _num(cfg, "ENDPOINTING_DELAY", "0.7"),
                     "max_delay": 6.0,
                 },
                 "interruption": {
@@ -583,6 +617,35 @@ def preflight() -> None:
         with urllib.request.urlopen(req, timeout=5) as r:
             logger.info("PREFLIGHT: LLM API OK at %s (HTTP %s)", base, r.status)
             logger.info("PREFLIGHT: using model name '%s'", model)
+            # The provider's /models list is public on many clouds (even with
+            # a bad key), so also verify the model id actually exists there.
+            # 'openrouter/free' for example is NOT a real OpenRouter model.
+            try:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+                if isinstance(data, dict):
+                    items = data.get("data") or data.get("models") or []
+                else:
+                    items = data or []
+                ids = []
+                for m in items:
+                    if isinstance(m, dict):
+                        mid = m.get("id") or m.get("name") or m.get("model")
+                        if mid:
+                            ids.append(str(mid))
+                    elif isinstance(m, str):
+                        ids.append(m)
+                if ids and model not in ids:
+                    logger.warning(
+                        "PREFLIGHT: model '%s' is NOT in this provider's model "
+                        "list (%d models found).", model, len(ids))
+                    logger.warning(
+                        "PREFLIGHT: FIX -> Settings -> Model picker -> pick a "
+                        "real model id -> Save changes.")
+                    sample = [i for i in ids if ":free" in i][:3] or ids[:3]
+                    if sample:
+                        logger.warning("PREFLIGHT: e.g. %s", ", ".join(sample))
+            except Exception:
+                pass  # list parsing is best-effort only
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             logger.error("PREFLIGHT: LLM API rejected the key (HTTP %s).", e.code)

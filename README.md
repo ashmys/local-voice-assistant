@@ -107,10 +107,18 @@ If your server has no authentication, **leave the key empty** — the kit detect
 |---|---|---|
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
-| OpenRouter | `https://openrouter.ai/api/v1` | any model id from their site |
+| OpenRouter | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free` |
 | Together / Fireworks / vLLM | `https://.../v1` | per their docs |
 
-Enter the API key for that provider and a real model name. **Privacy note:** with a cloud LLM, your *conversation text* goes to that provider; your voice still never leaves the machine (STT and TTS stay local).
+Enter the API key for that provider and a real model name. **The model picker** (gear icon → Connection → *Model picker*) fetches the live model list from whatever base URL you configured — localhost or cloud — and auto-selects your last used model, or a sensible default (on OpenRouter it prefers a `:free` model). You can still type any model id manually.
+
+**OpenRouter notes:**
+
+- Model ids look like `vendor/model:variant` — e.g. `meta-llama/llama-3.3-70b-instruct:free`, `openai/gpt-4o-mini`, `deepseek/deepseek-chat-v3.1:free`. There is **no** model called `openrouter/free`; the agent log warns `model '...' is NOT in this provider's model list` when the id does not exist.
+- The `https://openrouter.ai/api/v1` endpoint is checked with your key; if the key is wrong the launcher banner and the agent log say `auth failed`.
+- Free (`:free`) models are rate-limited by OpenRouter; if replies stall, pick a paid or a less busy free model.
+
+**Privacy note:** with a cloud LLM, your *conversation text* goes to that provider; your voice still never leaves the machine (STT and TTS stay local).
 
 `LLM streaming` (gear icon): *Full reply first* is the most stable mode; *Stream tokens* shows the text live while it is generated.
 
@@ -118,13 +126,15 @@ Enter the API key for that provider and a real model name. **Privacy note:** wit
 
 ## 6. Using the web page
 
+- **Standalone window**: on start the UI opens as its **own desktop window** (no browser tabs or address bar) via Chrome or Edge app mode. Prefer a normal browser tab? Set `UI_WINDOW=0` in `user_data/.env.local`, or turn off all auto-opening with `AUTO_OPEN=0`.
 - **Conversation panel (left)**: shows your messages and the assistant's answers as they happen; typed input is optional. Open/close it with the tab on the left edge — the panel remembers whether it was open or closed the next time you load the page.
 - **Clear button** (panel header): asks for confirmation, then empties the panel **and** removes the current session's messages from the saved chat history.
 - **Chat history** (clock icon, top right): browse past conversations stored in `user_data/chat/`. Click one and it **opens in the conversation panel** so you can go back to it; the header shows an orange `history ✕` chip — click it to return to the live view. Starting a new call also returns you to the live view.
 - **Center orb** reacts to the assistant's voice and rotates gently during a call; while no call is running it stays calm (no spinning, just a subtle breath). The bar above the call button shows your mic level.
 - **Status card** (top left): dot + word (ready / connecting / live — listening / assistant speaking / server down), mic state, and service chips (livekit, llm, GPU, STT/TTS models, agent) refreshed every 15 s.
 - **Call button preflight**: before connecting it checks LiveKit, the mic, and the library; warnings appear for a down LLM API or missing models instead of a silent stall.
-- **Settings** (gear icon) tabs cover every key: LiveKit URL/key/secret, LLM API URL/key/model, streaming mode, microphone device, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
+- **Settings** (gear icon) tabs cover every key: LiveKit URL/key/secret, LLM API URL/key/model (+ **model picker** that lists the provider's real model ids), streaming mode, microphone device, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
+- **Everything is selectable**: conversation text, history, settings hints — select and Ctrl+C anywhere.
 
 ## 7. Everyday use
 
@@ -152,6 +162,8 @@ Enter the API key for that provider and a real model name. **Privacy note:** wit
 | `python3-venv` error (Linux) | `sudo apt install python3-venv python3-pip`, then run `./setup.sh` again. |
 | Whisper shows `cpu` although you have a GPU | Gear icon → Device = `cuda`. If cuDNN errors appear, re-run setup step 1 (installs nvidia-cudnn-cu12). |
 | Agent log: `LLM API rejected the key (HTTP 401)` | Gear icon → API key must match what your provider expects. Save; applies to the next conversation. |
+| Agent log: `model '...' is NOT in this provider's model list` | The model id does not exist at that provider (e.g. `openrouter/free`). Gear icon → Model picker → pick a real id → Save. |
+| Agent log: `Config WHISPER_...='' is not a valid number` | Old saved settings had an empty numeric field. Fixed automatically (defaults are used); re-save your settings from the gear icon to clean the file. |
 | Agent log: `LLM API NOT reachable` | Local: start textgen / LM Studio / Ollama with the API enabled. Cloud: re-check URL, key, model name. The agent retries by itself. |
 | Agent hears itself / answers its own voice | Keep Echo guard ON (gear icon). Headphones avoid the issue entirely. |
 | Text chat works but the bot never hears my voice | Status card says `mic on` but silent? Pick another input device (gear icon → Connection → Microphone, applies to the next call). Windows: Settings → Privacy & security → Microphone → allow desktop apps. macOS: System Settings → Privacy & Security → Microphone → allow your browser. A red `Mic is connected but silent` toast means the browser delivers no signal. |

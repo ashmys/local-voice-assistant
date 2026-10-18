@@ -543,6 +543,62 @@ async def api_models_tts(_request: web.Request) -> web.Response:
     return web.json_response(list_tts_models())
 
 
+async def api_llm_models(request: web.Request) -> web.Response:
+    """Proxy GET {base}/models of the configured LLM provider.
+
+    Done server-side so the browser never fights CORS and never needs the
+    key directly. Body: {"url": optional base url, "key": optional key} -
+    falls back to the saved settings for anything omitted.
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    base = str(body.get("url") or setting("TEXTGEN_BASE_URL",
+                                          "http://127.0.0.1:5000/v1") or "").strip()
+    if "key" in body and body.get("key") is not None:
+        key = str(body.get("key")).strip()
+    else:
+        key = setting("TEXTGEN_API_KEY", "").strip()
+    if not re.match(r"^https?://", base):
+        return web.json_response({"error": "base URL must start with http:// or https://",
+                                  "models": []})
+    url = base.rstrip("/") + "/models"
+    headers = {"Authorization": "Bearer " + key} if key else {}
+
+    def _fetch():
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+
+    try:
+        data = await asyncio.to_thread(_fetch)
+    except urllib.error.HTTPError as e:
+        why = "auth failed (check the API key)" if e.code in (401, 403) \
+            else f"HTTP {e.code}"
+        return web.json_response({"error": why, "models": []})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)[:160], "models": []})
+    if isinstance(data, dict):
+        items = data.get("data") or data.get("models") or []
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+    models = []
+    for m in items:
+        if isinstance(m, dict):
+            mid = m.get("id") or m.get("name") or m.get("model")
+            if mid:
+                models.append(str(mid))
+        elif isinstance(m, str):
+            models.append(m)
+    models = sorted(set(models))
+    return web.json_response({"base": base, "count": len(models), "models": models})
+
+
 def count_local_models() -> dict:
     stt = 0
     base = whisper_dir()
@@ -628,13 +684,71 @@ async def log_and_nocache(request: web.Request, handler):
     return resp
 
 
-def open_browser_when_ready() -> None:
+def find_app_browser():
+    """A Chromium browser we can launch in --app mode (own window, no tabs).
+
+    Windows 11 always ships Edge; Chrome is checked first because users
+    often have it. Mic permissions work the same as in the normal browser.
+    """
+    cands = []
+    if os.name == "nt":
+        pf = os.environ.get("ProgramFiles", "C:\\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+        lap = os.environ.get("LocalAppData", "")
+        for root in (lap, pf, pf86):
+            if not root:
+                continue
+            cands.append(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+            cands.append(Path(root) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+    elif sys.platform == "darwin":
+        for name in ("Google Chrome", "Microsoft Edge", "Chromium", "Brave Browser"):
+            cands.append(Path("/Applications") / name / "Contents" / "MacOS" / name)
+    else:
+        for exe in ("google-chrome", "google-chrome-stable", "microsoft-edge",
+                    "microsoft-edge-stable", "chromium", "chromium-browser",
+                    "brave-browser"):
+            p = shutil.which(exe)
+            if p:
+                cands.append(Path(p))
+    for exe in cands:
+        try:
+            if exe.is_file() and os.access(str(exe), os.X_OK):
+                return exe
+        except OSError:
+            continue
+    return None
+
+
+def open_ui_when_ready() -> None:
     url = f"http://{HOST}:{PORT}/"
-    deadline = time.time() + 15
+    deadline = time.time() + 20
     while time.time() < deadline:
         if _tcp_alive(HOST, PORT, timeout=0.5):
             break
         time.sleep(0.25)
+    if setting("AUTO_OPEN", "1") != "1":
+        log(f"UI ready at {url} (AUTO_OPEN=0 - not opening anything)")
+        return
+    # Preferred: a standalone desktop window via Chrome/Edge --app mode.
+    if setting("UI_WINDOW", "1") == "1":
+        exe = find_app_browser()
+        if exe is not None:
+            try:
+                args = [str(exe), f"--app={url}", "--window-size=1240,860"]
+                if os.name == "nt":
+                    subprocess.Popen(args, close_fds=True,
+                                     creationflags=0x08000000)  # CREATE_NO_WINDOW
+                else:
+                    subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL,
+                                     start_new_session=True)
+                log(f"opened standalone app window via {exe.name} at {url}")
+                log("(set UI_WINDOW=0 to use a normal browser tab instead)")
+                return
+            except Exception as exc:
+                log(f"could not launch the app window ({exc}) - using the browser")
+        else:
+            log("no Chrome/Edge found for a standalone window - using the browser")
     try:
         if os.name == "nt":
             os.startfile(url)
@@ -676,8 +790,8 @@ def main() -> None:
 
     log("dispatch: automatic - the agent worker joins every room (no yaml or token setup)")
     if setting("AUTO_OPEN", "1") == "1":
-        threading.Thread(target=open_browser_when_ready, daemon=True,
-                         name="browser-open").start()
+        threading.Thread(target=open_ui_when_ready, daemon=True,
+                         name="ui-open").start()
 
     app = web.Application(middlewares=[log_and_nocache])
     app.router.add_get("/", index)
@@ -688,6 +802,7 @@ def main() -> None:
     app.router.add_post("/api/config", api_config_post)
     app.router.add_get("/api/models/stt", api_models_stt)
     app.router.add_get("/api/models/tts", api_models_tts)
+    app.router.add_post("/api/llm/models", api_llm_models)
     app.router.add_get("/api/chat/sessions", api_chat_sessions)
     app.router.add_get("/api/chat/session", api_chat_session)
     app.router.add_post("/api/chat/clear", api_chat_clear)

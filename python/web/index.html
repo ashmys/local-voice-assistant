@@ -25,8 +25,11 @@
     background: radial-gradient(1200px 800px at 50% 30%, #121625 0%, var(--bg) 60%);
     color: var(--fg);
     font-family: "Segoe UI", system-ui, sans-serif;
-    overflow: hidden; user-select: none;
+    overflow: hidden;
   }
+  /* all text is selectable/copyable now; only interactive controls opt out */
+  button { user-select: none; -webkit-user-select: none; }
+  #stage { user-select: none; -webkit-user-select: none; }
   #stage { position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; }
   canvas { display: block; }
 
@@ -169,6 +172,10 @@
   select { color-scheme: dark; }
   select option { background: #10131c; color: var(--fg); }
   .hint { font-size: 11px; color: var(--dim); margin-top: 5px; line-height: 1.55; }
+  .minibtn { background: rgba(110,168,255,.14); border: 1px solid rgba(110,168,255,.35);
+    color: var(--accent); border-radius: 7px; font-size: 10.5px; padding: 2px 9px;
+    cursor: pointer; margin-left: 6px; letter-spacing: .04em; text-transform: uppercase; }
+  .minibtn:hover { background: rgba(110,168,255,.26); }
   .field input[type=range] { width: 100%; accent-color: var(--accent); }
   .rangeval { float: right; color: var(--accent); font-size: 12px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -304,7 +311,11 @@
           </div>
           <div class="grid2">
             <div class="field"><label>API key (empty = none needed)</label><input type="password" id="cfg-TEXTGEN_API_KEY" placeholder="sk-... or empty for local servers"></div>
-            <div class="field"><label>Model name</label><input type="text" id="cfg-TEXTGEN_MODEL" placeholder="local-model, gpt-4o-mini, llama3..."></div>
+            <div class="field"><label>Model name (manual)</label><input type="text" id="cfg-TEXTGEN_MODEL" placeholder="local-model, gpt-4o-mini, llama3..."></div>
+          </div>
+          <div class="field"><label>Model picker <button type="button" class="minibtn" id="refreshmodels">refresh</button></label>
+            <select id="llmmodels"><option value="">Loading model list...</option></select>
+            <div class="hint" id="modelhint">Loads the model list from your provider. Picking one fills the model name above; you can also type any model id manually.</div>
           </div>
           <div class="field"><label>Token streaming</label>
             <select id="cfg-LLM_STREAMING"><option value="0">Full reply first (stable)</option><option value="1">Stream tokens (live text)</option></select>
@@ -1073,7 +1084,69 @@ async function loadConfigForm() {
     ensureOpt(vsel, cfg.TTS_VOICE);
     vsel.value = cfg.TTS_VOICE;
   }
+  refreshLlmModels(); // auto-select the last used model (or a default) if available
 }
+
+let modelFetchTimer = 0;
+
+async function refreshLlmModels() {
+  const sel = $("llmmodels"), hint = $("modelhint");
+  if (!sel) return;
+  const url = ($("cfg-TEXTGEN_BASE_URL").value || "").trim();
+  const key = ($("cfg-TEXTGEN_API_KEY").value || "").trim();
+  sel.innerHTML = '<option value="">loading...</option>';
+  hint.textContent = "Fetching model list from " + (url || "(no base URL)") + " ...";
+  try {
+    const r = await fetch("/api/llm/models", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, key }),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    const list = d.models || [];
+    sel.innerHTML = "";
+    if (!list.length) {
+      addOpt(sel, "", "(no models returned)");
+      hint.textContent = "The provider returned no models - type the model id manually above.";
+      return;
+    }
+    list.forEach((id) => addOpt(sel, id, id));
+    const cur = ($("cfg-TEXTGEN_MODEL").value || "").trim();
+    let pick = "";
+    if (cur && list.indexOf(cur) >= 0) {
+      pick = cur; // last used / saved model is still available
+    } else {
+      pick = list.find((m) => m.indexOf(":free") >= 0)
+        || (list.indexOf("openrouter/auto") >= 0 ? "openrouter/auto" : "")
+        || list[0];
+    }
+    sel.value = pick;
+    if (pick !== cur) {
+      $("cfg-TEXTGEN_MODEL").value = pick;
+      hint.textContent = "Auto-selected '" + pick + "' (" + list.length + " models found). Pick another or type your own, then Save changes.";
+    } else {
+      hint.textContent = "Using your last model '" + cur + "' (" + list.length + " available).";
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">(unavailable)</option>';
+    hint.textContent = "Could not list models (" + (e && e.message ? e.message : e) + ") - type the model id manually above.";
+  }
+}
+
+$("refreshmodels").addEventListener("click", refreshLlmModels);
+$("llmmodels").addEventListener("change", () => {
+  const v = $("llmmodels").value;
+  if (v) {
+    $("cfg-TEXTGEN_MODEL").value = v;
+    $("modelhint").textContent = "Picked '" + v + "' - click Save changes to apply it.";
+  }
+});
+["cfg-TEXTGEN_BASE_URL", "cfg-TEXTGEN_API_KEY"].forEach((id) => {
+  $(id).addEventListener("change", () => {
+    clearTimeout(modelFetchTimer);
+    modelFetchTimer = setTimeout(refreshLlmModels, 500);
+  });
+});
 
 function cfgEls() {
   const out = {};
