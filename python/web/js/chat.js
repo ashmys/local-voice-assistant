@@ -138,7 +138,12 @@ class ChatList {
     if (it.system) {
       div.className = "msg sys";
       const when = it.ts ? new Date(it.ts).toLocaleString() : "";
-      div.textContent = when ? "\u2014 " + when + " \u2014" : "\u2014 new session \u2014";
+      if (it.text && it.text !== "session-start") {
+        // a note in the log (e.g. an LLM error) - show it, not just the date
+        div.textContent = when ? when + " \u2014 " + it.text : it.text;
+      } else {
+        div.textContent = when ? "\u2014 " + when + " \u2014" : "\u2014 new session \u2014";
+      }
       return div;
     }
     div.className = "msg " + (it.who === "user" ? "you" : "bot");
@@ -172,10 +177,25 @@ function setHistMode(file) {
   $("histmode").classList.toggle("show", !!viewingFile);
 }
 
-$("histmode").addEventListener("click", () => {
-  resetTranscript();
+// Leaving history view goes back to the LIVE conversation - rebuild it from
+// the saved log (which now contains everything received this sitting) instead
+// of showing an empty panel.
+$("histmode").addEventListener("click", async () => {
   setHistMode(null);
-  toast("Back to the live conversation view");
+  const r = currentRoom || savedRoom();
+  if (!r) { resetTranscript(); toast("Back to the live conversation view"); return; }
+  try {
+    const msgs = await fetchSavedHistory(r);
+    const pending = chatList.items.filter((it) => it.final === false);
+    chatList.setAll(historyItems(msgs));
+    pending.forEach((it) => chatList.append(it));
+    chatList.scrollBottom();
+    toast("Back to the live conversation view");
+  } catch (e) {
+    resetTranscript();
+    toast("Back to live view (could not reload the saved log: " +
+          (e && e.message ? e.message : e) + ")");
+  }
 });
 
 // ---- persistent room: one chat log per browser, resumed across restarts ----
@@ -189,18 +209,65 @@ function storeRoom(r) {
   } catch (e) {}
 }
 
+// Turn saved .jsonl records into panel items. Keys use the agent's message id
+// (u3 / b12) for the LATEST occurrence so live messages merge seamlessly with
+// the reloaded log instead of appearing twice; older repeats get unique keys.
+function historyItems(msgs) {
+  const taken = new Set();
+  const out = new Array(msgs.length);
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i] || {};
+    let key = m.id || "";
+    if (!key || taken.has(key)) key = "h:" + i;
+    taken.add(key);
+    out[i] = { key, who: m.who, text: m.text, final: true,
+               ts: m.ts, system: m.who === "system" };
+  }
+  return out;
+}
+
+async function fetchSavedHistory(room) {
+  const d = await fetchJson("/api/chat/session?room=" + encodeURIComponent(room));
+  if (d.error) throw new Error(d.error);
+  return d.messages || [];
+}
+
+// ---- manual refresh: reload the chat log from disk into the panel ----
+async function refreshPanel() {
+  try {
+    if (viewingFile) {
+      const d = await fetchJson("/api/chat/session?file=" + encodeURIComponent(viewingFile));
+      if (d.error) throw new Error(d.error);
+      const msgs = d.messages || [];
+      chatList.setAll(historyItems(msgs));
+      chatList.scrollBottom();
+      toast("Reloaded " + (msgs.length) + " saved messages");
+      return;
+    }
+    const r = currentRoom || savedRoom();
+    if (!r) { toast("No saved conversation yet"); return; }
+    const msgs = await fetchSavedHistory(r);
+    if (!msgs.length) { toast("The saved log for this room is empty"); return; }
+    // Streaming partials are not on disk yet - keep them on top of the log.
+    const pending = chatList.items.filter((it) => it.final === false);
+    setHistMode(null);
+    chatList.setAll(historyItems(msgs));
+    pending.forEach((it) => chatList.append(it));
+    chatList.scrollBottom();
+    toast("Chat log reloaded (" + msgs.length + " saved messages)");
+  } catch (e) {
+    toast("Refresh failed: " + (e && e.message ? e.message : e));
+  }
+}
+
+$("refreshhist").addEventListener("click", () => { refreshPanel(); });
+
 async function preloadSavedHistory() {
   const r = savedRoom();
   if (!r) return;
   try {
-    const d = await fetchJson("/api/chat/session?room=" + encodeURIComponent(r));
-    const msgs = d.messages || [];
-    if (msgs.length) {
-      chatList.setAll(msgs.map((m, i) => ({
-        key: "h" + i, who: m.who, text: m.text, final: true,
-        ts: m.ts, system: m.who === "system",
-      })));
-    }
+    const msgs = await fetchSavedHistory(r);
+    if (msgs.length) chatList.setAll(historyItems(msgs));
   } catch (e) {
     console.warn("history preload failed", e);
   }
@@ -327,10 +394,7 @@ async function loadHistoryIntoPanel(file) {
     if (d.error) throw new Error(d.error);
     const msgs = d.messages || [];
     resetTranscript();
-    chatList.setAll(msgs.map((m, i) => ({
-      key: "h" + i, who: m.who, text: m.text, final: true,
-      ts: m.ts, system: m.who === "system",
-    })));
+    chatList.setAll(historyItems(msgs));
     setHistMode(file);
     sideOpen = true;
     applySide();

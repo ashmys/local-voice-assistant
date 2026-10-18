@@ -48,13 +48,14 @@ WINDOW_STATE_FILE = ROOT / "user_data" / "window_state.json"
 HB_INTERVAL = 2.5        # the page beats every 2.5 s while visible
 HB_GAP_SHUTDOWN = 600.0  # last-resort net: minutes of total silence (minimized
                          # pages can be timer-throttled/frozen by Chromium)
-HB_GAP_PENDING = 6.0     # after a pagehide beacon: a REAL close fires it; a
+HB_GAP_PENDING = 3.0     # after a pagehide beacon: a REAL close fires it; a
                          # refresh re-beats within ~1.5 s and cancels it
 _SHUT_LOCK = threading.Lock()
 _SHUTTING = False
 _LAST_BEAT = 0.0         # time.monotonic() of the last /api/heartbeat
 _CLOSE_PENDING_AT = 0.0  # time.monotonic() of the last /api/window/closing
 _WIN_MINIMIZED = False   # tracked app window is minimized (beats may pause)
+_CLOSE_CHECK = threading.Event()  # beacon asks the window tracker for an instant re-check
 
 
 def _monotonic() -> float:
@@ -65,15 +66,32 @@ def heartbeat_fresh(window: float = 3.0) -> bool:
     return _LAST_BEAT > 0 and (_monotonic() - _LAST_BEAT) <= window
 
 
-def request_shutdown(reason: str) -> None:
-    """Stop the children and exit this supervisor (closing the console too)."""
+def request_shutdown(reason: str, fast: bool = False) -> None:
+    """Stop the children and exit this supervisor (closing the console too).
+
+    fast=True is used when the tracked app window / browser process is GONE -
+    hard evidence of a close. The last heartbeat may still be fresh (the page
+    beat 1 s before the user hit X), so in that case we give any OTHER open
+    UI page up to ~1.2 s to send one more beat before deciding; if none
+    arrives we shut down immediately instead of waiting out the slow
+    heartbeat backstop.
+    """
     global _SHUTTING
     if setting("CLOSE_WITH_WINDOW", "1") != "1":
         return
     if heartbeat_fresh():
-        # Another UI page (a second window/tab) is still alive - keep running.
-        log(f"window closed, but the UI is still sending heartbeats - staying up ({reason})")
-        return
+        if not fast:
+            # Slow path (beacon/heartbeat watcher): another UI page (a second
+            # window/tab) is probably still alive - keep running.
+            log(f"window closed, but the UI is still sending heartbeats - staying up ({reason})")
+            return
+        baseline = _LAST_BEAT
+        deadline = _monotonic() + 1.2
+        while _monotonic() < deadline:
+            if _LAST_BEAT != baseline:
+                log(f"window closed, but another UI page is still alive - staying up ({reason})")
+                return
+            time.sleep(0.1)
     with _SHUT_LOCK:
         if _SHUTTING:
             return
@@ -91,7 +109,7 @@ def heartbeat_watcher() -> None:
     (a real window close), slow backstop for everything else."""
     global _WIN_MINIMIZED
     while True:
-        time.sleep(2.0)
+        time.sleep(1.0)
         if _LAST_BEAT <= 0:
             continue  # nothing has opened the UI yet - nothing to watch
         if _WIN_MINIMIZED:
@@ -117,6 +135,8 @@ PORT = 8090
 CHILDREN = {}
 _RESTART = {}
 _OUT = {}
+_BROWSER = None          # the app-window browser process (killed on shutdown)
+_BROWSER_JOBBED = False  # was the browser assigned to the Job Object?
 
 
 def log(msg: str) -> None:
@@ -341,7 +361,10 @@ def heal_yaml() -> None:
 
 def stop_children() -> None:
     _RESTART.clear()
-    for name, proc in list(CHILDREN.items()):
+    procs = list(CHILDREN.items())
+    if _BROWSER is not None:
+        procs.append(("ui-browser", _BROWSER))
+    for name, proc in procs:
         try:
             proc.terminate()
         except OSError:
@@ -607,6 +630,7 @@ async def api_config_post(request: web.Request) -> web.Response:
         "TTS_VOICE", "TTS_SPEED", "VAD_MIN_SILENCE", "VAD_ACTIVATION_THRESHOLD",
         "ENDPOINTING_DELAY", "ECHO_GUARD", "ECHO_GUARD_TAIL", "LOG_LEVEL",
         "AUTO_OPEN", "UI_WINDOW", "CLOSE_WITH_WINDOW",
+        "UI_BROWSER", "UI_PROFILE",
     }
     for k, v in updates.items():
         if k not in allowed or not isinstance(v, str):
@@ -637,7 +661,16 @@ async def api_heartbeat(_request: web.Request) -> web.Response:
 async def api_window_closing(_request: web.Request) -> web.Response:
     global _CLOSE_PENDING_AT
     _CLOSE_PENDING_AT = _monotonic()
+    _CLOSE_CHECK.set()  # tell the window tracker to re-check RIGHT NOW
     return web.Response(status=204)
+
+
+async def api_browsers(_request: web.Request) -> web.Response:
+    """Installed browsers for the Settings dropdown (default browser first)."""
+    return web.json_response({
+        "browsers": detect_browsers(),
+        "chosen": setting("UI_BROWSER", ""),
+    })
 
 
 async def api_models_stt(_request: web.Request) -> web.Response:
@@ -799,38 +832,247 @@ async def log_and_nocache(request: web.Request, handler):
     return resp
 
 
-def find_app_browser():
-    """A Chromium browser we can launch in --app mode (own window, no tabs).
+# --- Browser selection -------------------------------------------------------
+# The app window (UI_WINDOW=1) opens in a real browser in --app mode. Which
+# browser: UI_BROWSER in user_data/.env.local (also in Settings -> Advanced).
+#   "" / "auto"    the Windows/macOS DEFAULT browser first, then any Chromium
+#   "default"      strictly the system default browser (even Firefox)
+#   "brave" / "chrome" / "edge" / "chromium" / "vivaldi" / "opera" / "firefox"
+#   "C:\\path\\to\\browser.exe"   an explicit executable
 
-    Windows 11 always ships Edge; Chrome is checked first because users
-    often have it. Mic permissions work the same as in the normal browser.
-    """
-    cands = []
-    if os.name == "nt":
-        pf = os.environ.get("ProgramFiles", "C:\\Program Files")
-        pf86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
-        lap = os.environ.get("LocalAppData", "")
-        for root in (lap, pf, pf86):
-            if not root:
+# id, display name, is Chromium (supports --app/--window-size), candidate paths
+_BROWSER_CATALOG = [
+    ("brave", "Brave", True, [
+        ("nt", ("BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
+        ("darwin", ("Brave Browser.app", "Contents", "MacOS", "Brave Browser")),
+        ("unix", ("brave-browser", "brave")),
+    ]),
+    ("chrome", "Google Chrome", True, [
+        ("nt", ("Google", "Chrome", "Application", "chrome.exe")),
+        ("darwin", ("Google Chrome.app", "Contents", "MacOS", "Google Chrome")),
+        ("unix", ("google-chrome", "google-chrome-stable", "chromium",
+                  "chromium-browser")),
+    ]),
+    ("edge", "Microsoft Edge", True, [
+        ("nt", ("Microsoft", "Edge", "Application", "msedge.exe")),
+        ("darwin", ("Microsoft Edge.app", "Contents", "MacOS",
+                    "Microsoft Edge")),
+        ("unix", ("microsoft-edge", "microsoft-edge-stable")),
+    ]),
+    ("vivaldi", "Vivaldi", True, [
+        ("nt", ("Vivaldi", "Application", "vivaldi.exe")),
+        ("darwin", ("Vivaldi.app", "Contents", "MacOS", "Vivaldi")),
+        ("unix", ("vivaldi", "vivaldi-stable")),
+    ]),
+    ("opera", "Opera", True, [
+        ("nt", ("Opera", "launcher.exe")),
+        ("darwin", ("Opera.app", "Contents", "MacOS", "Opera")),
+        ("unix", ("opera",)),
+    ]),
+    ("chromium", "Chromium", True, [
+        ("nt", ("Chromium", "Application", "chrome.exe")),
+        ("darwin", ("Chromium.app", "Contents", "MacOS", "Chromium")),
+        ("unix", ("chromium", "chromium-browser")),
+    ]),
+    ("firefox", "Firefox", False, [
+        ("nt", ("Mozilla Firefox", "firefox.exe")),
+        ("darwin", ("Firefox.app", "Contents", "MacOS", "firefox")),
+        ("unix", ("firefox", "firefox-esr")),
+    ]),
+]
+
+_APP_PATHS_EXES = {"brave": "brave.exe", "chrome": "chrome.exe",
+                   "edge": "msedge.exe", "vivaldi": "vivaldi.exe",
+                   "opera": "opera.exe", "chromium": "chromium.exe",
+                   "firefox": "firefox.exe"}
+
+
+def _win_prog_files_dirs() -> list:
+    pf = os.environ.get("ProgramFiles", "C:\\Program Files")
+    pf86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+    lap = os.environ.get("LocalAppData", "")
+    return [d for d in (lap, pf, pf86) if d]
+
+
+def _win_app_paths_exe(exe_name: str):
+    """Resolve via HKLM/HKCU ...\\App Paths\\<exe> (works for portable installs)."""
+    try:
+        import winreg
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(
+                        root,
+                        r"SOFTWARE\Microsoft\Windows\CurrentVersion"
+                        r"\App Paths" + "\\" + exe_name) as k:
+                    val, _typ = winreg.QueryValueEx(k, None)
+            except OSError:
                 continue
-            cands.append(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
-            cands.append(Path(root) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
-    elif sys.platform == "darwin":
-        for name in ("Google Chrome", "Microsoft Edge", "Chromium", "Brave Browser"):
-            cands.append(Path("/Applications") / name / "Contents" / "MacOS" / name)
-    else:
-        for exe in ("google-chrome", "google-chrome-stable", "microsoft-edge",
-                    "microsoft-edge-stable", "chromium", "chromium-browser",
-                    "brave-browser"):
-            p = shutil.which(exe)
-            if p:
-                cands.append(Path(p))
-    for exe in cands:
+            if val:
+                p = Path(str(val).strip().strip('"').split("\"")[0])
+                if p.is_file():
+                    return p
+    except Exception:
+        pass
+    return None
+
+
+def _win_default_browser_exe():
+    """The executable Windows opens for http/https links (the user's default
+    browser), read from the UserChoice registry association."""
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+        for assoc in ("https", "http"):
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                    r"Software\Microsoft\Windows\Shell"
+                                    r"\Associations\UrlAssociations" + "\\"
+                                    + assoc + r"\UserChoice") as k:
+                    progid, _typ = winreg.QueryValueEx(k, "ProgId")
+            except OSError:
+                continue
+            if not progid:
+                continue
+            try:
+                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,
+                                    progid + r"\shell\open\command") as k:
+                    cmd, _typ = winreg.QueryValueEx(k, None)
+            except OSError:
+                continue
+            cmd = (cmd or "").strip()
+            if not cmd:
+                continue
+            # '"C:\\...\\brave.exe" --single-argument %1' -> the exe path
+            if cmd.startswith('"'):
+                exe = cmd.split('"', 2)[1]
+            else:
+                exe = cmd.split(" ", 1)[0]
+            p = Path(exe)
+            if p.is_file():
+                return p
+    except Exception:
+        pass
+    return None
+
+
+def _browser_id_for_exe(exe: Path):
+    base = exe.name.lower()
+    for bid, _name, chromium, _cands in _BROWSER_CATALOG:
+        if base == _APP_PATHS_EXES[bid]:
+            return bid, chromium
+    if "brave" in base:
+        return "brave", True
+    if "msedge" in base or "edge" in base:
+        return "edge", True
+    if "firefox" in base:
+        return "firefox", False
+    if "vivaldi" in base:
+        return "vivaldi", True
+    if "opera" in base:
+        return "opera", True
+    if "chrome" in base:
+        return "chrome", True
+    return "custom", True  # unknown Chromium-like (Chromium forks handle --app)
+
+
+def _catalog_paths(bid: str) -> list:
+    """All installed executables for a catalog browser id."""
+    out = []
+    for cid, _name, _chromium, cands in _BROWSER_CATALOG:
+        if cid != bid:
+            continue
+        for plat, parts in cands:
+            if plat == "nt" and os.name == "nt":
+                for root in _win_prog_files_dirs():
+                    out.append(Path(root).joinpath(*parts))
+                ap = _win_app_paths_exe(parts[-1])
+                if ap:
+                    out.append(ap)
+            elif plat == "darwin" and sys.platform == "darwin":
+                out.append(Path("/Applications").joinpath(*parts))
+            elif plat == "unix" and os.name != "nt" and sys.platform != "darwin":
+                for exe in parts:
+                    p = shutil.which(exe)
+                    if p:
+                        out.append(Path(p))
+        break
+    seen, uniq = set(), []
+    for p in out:
         try:
-            if exe.is_file() and os.access(str(exe), os.X_OK):
-                return exe
+            rp = str(p.resolve()).lower()
+            if p.is_file() and os.access(str(p), os.X_OK) and rp not in seen:
+                seen.add(rp)
+                uniq.append(p)
         except OSError:
             continue
+    return uniq
+
+
+def detect_browsers() -> list:
+    """Installed browsers for the settings dropdown, default browser first."""
+    default = _win_default_browser_exe() if os.name == "nt" else None
+    found, seen = [], set()
+    if default is not None:
+        try:
+            rp = str(default.resolve()).lower()
+        except OSError:
+            rp = str(default).lower()
+        bid, chromium = _browser_id_for_exe(default)
+        found.append({"id": bid, "name": _display_name(bid, default),
+                      "path": str(default), "chromium": chromium,
+                      "default": True})
+        seen.add(rp)
+    for bid, name, chromium, _cands in _BROWSER_CATALOG:
+        for p in _catalog_paths(bid):
+            try:
+                rp = str(p.resolve()).lower()
+            except OSError:
+                rp = str(p).lower()
+            if rp in seen:
+                continue
+            seen.add(rp)
+            found.append({"id": bid, "name": name, "path": str(p),
+                          "chromium": chromium, "default": False})
+    return found
+
+
+def _display_name(bid: str, exe: Path) -> str:
+    for cid, name, _chromium, _cands in _BROWSER_CATALOG:
+        if cid == bid:
+            return name
+    return exe.stem.capitalize()
+
+
+def find_app_browser():
+    """Resolve which browser opens the standalone app window.
+
+    Returns (path, browser_id, is_chromium) or None. Chromium browsers get a
+    real --app window (own taskbar icon, remembered geometry); Firefox gets a
+    normal window and heartbeat-only close detection.
+    """
+    chosen = setting("UI_BROWSER", "").strip().strip('"')
+    installed = detect_browsers()
+    default = next((b for b in installed if b.get("default")), None)
+
+    def pick(b):
+        return Path(b["path"]), b["id"], bool(b["chromium"])
+
+    if chosen and chosen.lower() not in ("auto", "default"):
+        low = chosen.lower()
+        exact = next((b for b in installed if b["id"] == low), None)
+        if exact:
+            return pick(exact)
+        custom = Path(chosen)
+        if custom.is_file() and os.access(str(custom), os.X_OK):
+            bid, chromium = _browser_id_for_exe(custom)
+            return custom, bid, chromium
+        log(f"UI_BROWSER={chosen!r} not found - falling back to the default browser")
+    if (not chosen or chosen.lower() == "default") and default is not None:
+        return pick(default)
+    # auto: default browser first (already first in `installed`), then the rest
+    if installed:
+        return pick(installed[0])
     return None
 
 
@@ -972,9 +1214,14 @@ def _sample_window(u, hwnd) -> dict:
             "dpi": int(dpi)}
 
 
-def track_window(proc, saved_mode: str) -> None:
+def track_window(proc, saved_mode: str, chromium: bool = True) -> None:
     """Follow the app window: restore its last mode, keep window_state.json
-    fresh, and shut everything down when the window/process disappears."""
+    fresh, and shut everything down as soon as the window/process disappears.
+
+    The loop wakes every second, and a pagehide beacon (window close) wakes it
+    instantly via _CLOSE_CHECK, so closing the app window stops the console
+    within about a second.
+    """
     global _WIN_MINIMIZED
     u = _win32()
     if u is None:
@@ -992,14 +1239,19 @@ def track_window(proc, saved_mode: str) -> None:
     last = None
     try:
         while True:
-            time.sleep(3.0)
-            if proc.poll() is not None:
-                time.sleep(1.5)
-                request_shutdown("app window closed (browser process exited)")
+            # Wake immediately when the page announces it is closing (beacon);
+            # otherwise re-check every 1.0 s.
+            _CLOSE_CHECK.wait(1.0)
+            _CLOSE_CHECK.clear()
+            if chromium and owned and proc.poll() is not None:
+                # Dedicated-profile Chromium: process exit == window gone.
+                request_shutdown("app window closed (browser process exited)", fast=True)
+                return
+            if not chromium and proc.poll() is not None:
+                # Firefox handed the URL to an existing instance - not a close.
                 return
             if not u.IsWindow(hwnd):
-                time.sleep(1.5)
-                request_shutdown("app window closed")
+                request_shutdown("app window closed", fast=True)
                 return
             _WIN_MINIMIZED = bool(u.IsIconic(hwnd))
             if _WIN_MINIMIZED:
@@ -1016,6 +1268,7 @@ def track_window(proc, saved_mode: str) -> None:
 
 
 def open_ui_when_ready() -> None:
+    global _BROWSER, _BROWSER_JOBBED
     url = f"http://{HOST}:{PORT}/"
     deadline = time.time() + 20
     while time.time() < deadline:
@@ -1025,19 +1278,39 @@ def open_ui_when_ready() -> None:
     if setting("AUTO_OPEN", "1") != "1":
         log(f"UI ready at {url} (AUTO_OPEN=0 - not opening anything)")
         return
-    # Preferred: a standalone desktop window via Chrome/Edge --app mode.
+    # Preferred: a standalone desktop window in --app mode (Chromium browsers:
+    # Edge, Chrome, Brave, Vivaldi, Opera, Chromium). UI_BROWSER picks which;
+    # empty/auto = your system DEFAULT browser first.
     if setting("UI_WINDOW", "1") == "1":
-        exe = find_app_browser()
-        if exe is not None:
+        resolved = find_app_browser()
+        if resolved is not None:
+            exe, bid, chromium = resolved
+            own_profile = (setting("UI_PROFILE", "1") == "1") and chromium
             try:
                 st = load_window_state()
                 mode = str(st.get("mode") or "windowed")
-                args = [str(exe), f"--app={url}"]
-                if mode == "maximized":
-                    args.append("--start-maximized")
-                elif mode == "fullscreen":
-                    args.append("--start-fullscreen")
+                args = [str(exe)]
+                if chromium:
+                    args.append(f"--app={url}")
+                    args.append("--no-first-run")
+                    args.append("--no-default-browser-check")
+                    if own_profile:
+                        # A dedicated profile guarantees our own browser process:
+                        # we can watch it precisely (instant close detection) and
+                        # kill it when the terminal closes. First launch asks for
+                        # mic permission once; it sticks in that profile.
+                        prof = ROOT / "user_data" / "browser-profile"
+                        prof.mkdir(parents=True, exist_ok=True)
+                        args.append(f"--user-data-dir={prof}")
                 else:
+                    args.append("--new-window")
+                    args.append(url)
+                    mode = "windowed"
+                if chromium and mode == "maximized":
+                    args.append("--start-maximized")
+                elif chromium and mode == "fullscreen":
+                    args.append("--start-fullscreen")
+                elif chromium:
                     mode = "windowed"
                     w, h = int(st.get("w") or 0), int(st.get("h") or 0)
                     x, y = int(st.get("x") or 0), int(st.get("y") or 0)
@@ -1057,20 +1330,46 @@ def open_ui_when_ready() -> None:
                     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
                                             stderr=subprocess.DEVNULL,
                                             start_new_session=True)
-                log(f"opened standalone app window via {exe.name} at {url} "
+                _BROWSER = proc
+                assign_job(proc)
+                _BROWSER_JOBBED = JOB is not None and os.name == "nt"
+                log(f"opened standalone app window via {exe.name} ({bid}) at {url} "
                     f"(mode: {mode})")
-                if mode == "windowed" and len(args) == 3:
+                if own_profile:
+                    log("(own browser profile: user_data/browser-profile - the app "
+                        "window is tracked exactly, and closing the terminal "
+                        "closes it too; set UI_PROFILE=0 to use your normal profile)")
+                if _BROWSER_JOBBED:
+                    log("(browser bound to this console - closing the terminal "
+                        "closes the app window too)")
+                if mode == "windowed" and chromium and not int(st.get("w") or 0):
                     log("(first run - default size; the window you arrange is "
                         "remembered for next time)")
                 log("(set UI_WINDOW=0 to use a normal browser tab instead)")
                 if os.name == "nt":
-                    threading.Thread(target=track_window, args=(proc, mode),
+                    threading.Thread(target=track_window,
+                                     args=(proc, mode, chromium),
                                      daemon=True, name="win-track").start()
+                else:
+                    threading.Thread(target=_unix_watch_browser, args=(proc, chromium),
+                                     daemon=True, name="win-track").start()
+                if own_profile:
+                    # A dedicated-profile browser that dies within 6 s means the
+                    # launch failed (broken exe, antivirus...) - fall back to the
+                    # system default browser so the user still gets a UI.
+                    try:
+                        if proc.wait(timeout=6) is not None:
+                            log(f"{exe.name} exited immediately - opening the "
+                                "default browser instead")
+                            _BROWSER = None
+                            raise RuntimeError("app browser exited at once")
+                    except subprocess.TimeoutExpired:
+                        pass  # still running - all good
                 return
             except Exception as exc:
                 log(f"could not launch the app window ({exc}) - using the browser")
         else:
-            log("no Chrome/Edge found for a standalone window - using the browser")
+            log("no supported browser found for a standalone window - using the browser")
     try:
         if os.name == "nt":
             os.startfile(url)
@@ -1081,6 +1380,14 @@ def open_ui_when_ready() -> None:
         log(f"opened {url} in your browser (set AUTO_OPEN=0 to disable)")
     except Exception as exc:
         log(f"could not auto-open browser ({exc}) - open {url} manually")
+
+
+def _unix_watch_browser(proc, chromium: bool) -> None:
+    """Non-Windows: shut down when the app-window browser process goes away."""
+    if not chromium:
+        return  # Firefox may delegate to a running instance - do not guess
+    proc.wait()
+    request_shutdown("app window closed (browser process exited)", fast=True)
 
 
 def build_app() -> web.Application:
@@ -1094,6 +1401,7 @@ def build_app() -> web.Application:
     app.router.add_post("/api/config", api_config_post)
     app.router.add_get("/api/models/stt", api_models_stt)
     app.router.add_get("/api/models/tts", api_models_tts)
+    app.router.add_get("/api/browsers", api_browsers)
     app.router.add_post("/api/llm/models", api_llm_models)
     app.router.add_get("/api/chat/sessions", api_chat_sessions)
     app.router.add_get("/api/chat/session", api_chat_session)
@@ -1133,7 +1441,8 @@ def main() -> None:
 
     log("dispatch: automatic - the agent worker joins every room (no yaml or token setup)")
     if setting("CLOSE_WITH_WINDOW", "1") == "1":
-        log("window close    : closing the app window (or its tab) stops everything too")
+        log("window close    : closing the app window stops everything instantly")
+        log("                  closing this terminal closes the app window too")
         log("                  (set CLOSE_WITH_WINDOW=0 in user_data/.env.local to disable)")
     if setting("AUTO_OPEN", "1") == "1":
         threading.Thread(target=open_ui_when_ready, daemon=True,

@@ -258,6 +258,7 @@ class TranscriptHub:
         self._seq = 0
         self._tasks = set()
         self._history = None
+        self._written = 0
         if history_path is not None:
             try:
                 CHAT_DIR.mkdir(parents=True, exist_ok=True)
@@ -281,6 +282,10 @@ class TranscriptHub:
             }, ensure_ascii=False)
             self._history.write(line + "\n")
             self._history.flush()
+            # fsync: the record must survive even a hard kill (window closed,
+            # PC powered off) - this file IS the user's conversation history.
+            os.fsync(self._history.fileno())
+            self._written += 1
         except OSError as exc:
             logger.warning("chat history write failed (%s)", exc)
 
@@ -326,12 +331,22 @@ class TranscriptHub:
         if text:
             self._send("bot", text, msg_id, final)
 
+    def system_note(self, text: str) -> None:
+        """A non-conversation line (e.g. an LLM error) saved to the .jsonl so
+        the file explains itself later: gaps in the replies have a reason."""
+        text = (text or "").strip()
+        if text:
+            self._write_history("system", text, "")
+            logger.info("chat log note: %s", text)
+
     def close(self) -> None:
         if self._history is not None:
             try:
                 self._history.close()
             except OSError:
                 pass
+            logger.info("Chat log closed: %d record(s) written this session",
+                        self._written)
             self._history = None
 
 
@@ -367,7 +382,7 @@ def build_tts(cfg: dict):
     )
 
 
-def build_llm(cfg: dict, publish_reply=None):
+def build_llm(cfg: dict, publish_reply=None, on_error=None):
     base = cfg.get("TEXTGEN_BASE_URL", "http://127.0.0.1:5000/v1")
     raw_key = (cfg.get("TEXTGEN_API_KEY", "") or "").strip()
     # The openai client insists on a non-empty key; servers without auth
@@ -393,10 +408,10 @@ def build_llm(cfg: dict, publish_reply=None):
         except Exception:
             inner = openai.LLM(base_url=base, api_key=key, model=model)
         if publish_reply:
-            return relay_llm(inner, publish_reply)
+            return relay_llm(inner, publish_reply, on_error=on_error)
         return inner
     return create_textgen_llm(base_url=base, api_key=key, model=model,
-                              on_reply=publish_reply)
+                              on_reply=publish_reply, on_error=on_error)
 
 
 _MODELS = {"fp": None, "vad": None, "stt": None, "tts": None, "last_good": {}}
@@ -464,6 +479,54 @@ def history_path_for(room_name: str) -> Path:
     return CHAT_DIR / f"{stamp}-{safe}.jsonl"
 
 
+def _loopback_api(base: str) -> bool:
+    try:
+        host = re.sub(r"^https?://", "", base).split("/")[0].split(":")[0]
+        return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+    except Exception:
+        return False
+
+
+def fix_local_model_name(cfg: dict) -> dict:
+    """Local OpenAI-compatible servers (oobabooga textgen, llama.cpp, LM
+    Studio) only ever serve the model(s) they have loaded - a wrong saved id
+    like 'openrouter/free' would just confuse the session. If the configured
+    model is not on the server's /models list, use its first real id for this
+    session (the saved setting is not touched).
+    """
+    base = (cfg.get("TEXTGEN_BASE_URL", "") or "").strip()
+    if not base or not _loopback_api(base):
+        return cfg
+    model = (cfg.get("TEXTGEN_MODEL", "") or "").strip()
+    key = (cfg.get("TEXTGEN_API_KEY", "") or "").strip()
+    headers = {"Authorization": "Bearer " + key} if key else {}
+    try:
+        req = urllib.request.Request(base.rstrip("/") + "/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=4) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        items = (data.get("data") or data.get("models") or []) if isinstance(data, dict) else (data or [])
+        ids = []
+        for m in items:
+            if isinstance(m, dict):
+                mid = m.get("id") or m.get("name") or m.get("model")
+                if mid:
+                    ids.append(str(mid))
+            elif isinstance(m, str):
+                ids.append(m)
+    except Exception:
+        return cfg  # server down/slow - the normal error path will explain
+    if not ids:
+        return cfg
+    if model and model in ids:
+        return cfg
+    fixed = dict(cfg)
+    fixed["TEXTGEN_MODEL"] = ids[0]
+    logger.warning("Model '%s' is not on this local server's model list - "
+                   "using '%s' for this session (pick a real id in Settings "
+                   "to make it permanent).", model or "(empty)", ids[0])
+    return fixed
+
+
 server = AgentServer(num_idle_processes=1)
 
 
@@ -492,7 +555,18 @@ async def voice_agent(ctx: agents.JobContext) -> None:
             if guard is not None and final:
                 guard.note_spoken(text)
 
-        llm = build_llm(cfg, publish_reply=publish_bot)
+        def on_llm_error(detail: str) -> None:
+            # Keep the .jsonl truthful: the turn HAS a user line, so record
+            # why there is no real reply. Also print a fix hint.
+            logger.error("LLM error: %s", detail)
+            logger.error("FIX -> check the LLM server's own console window; if it "
+                         "shares this GPU, it may have run out of VRAM once "
+                         "Whisper loaded - lower its context size or set "
+                         "WHISPER_DEVICE=cpu.")
+            hub.system_note("llm error - this turn was not answered: " + detail[:300])
+
+        cfg = fix_local_model_name(cfg)
+        llm = build_llm(cfg, publish_reply=publish_bot, on_error=on_llm_error)
 
         stream_stt = lk_stt.StreamAdapter(stt=stt, vad=vad)
         if guard is not None:
@@ -676,6 +750,35 @@ def preflight() -> None:
         logger.error("PREFLIGHT: localhost -> start textgen / LM Studio / Ollama with its API enabled.")
         logger.error("PREFLIGHT: cloud    -> re-check the base URL, key and model name in the web UI.")
         logger.error("PREFLIGHT: The agent retries by itself if the API blips later.")
+
+    # /models can answer 200 even when generation is broken (oobabooga with a
+    # dead llama.cpp backend, wrong model id, unloaded model...). Ask for a
+    # 1-token completion so a broken backend is visible BEFORE the first talk.
+    try:
+        payload = json.dumps({
+            "model": model or "local-model",
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1, "temperature": 0,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            base.rstrip("/") + "/chat/completions", data=payload,
+            headers={"Content-Type": "application/json",
+                     **({"Authorization": "Bearer " + key} if key else {})})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            logger.info("PREFLIGHT: LLM generation smoke test OK (HTTP %s)", r.status)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            pass
+        logger.error("PREFLIGHT: LLM GENERATION FAILED (HTTP %s) even though /models "
+                     "answered. body: %s", e.code, body)
+        logger.error("PREFLIGHT: FIX -> open the textgen/LM Studio console and read its "
+                     "error; make sure a model is actually loaded.")
+    except Exception as e:
+        logger.warning("PREFLIGHT: LLM generation smoke test skipped (%s) - the real "
+                       "conversation will retry on its own.", e)
     logger.info("-" * 60)
 
 

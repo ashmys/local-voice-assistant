@@ -37,7 +37,7 @@
   </div>
 
   <div id="side" class="hidden">
-    <div id="sidehead"><span>Conversation</span><span id="histmode" class="histmode" title="Viewing a past conversation - click to return to the live view">history &#10005;</span><button class="clearlog" id="newchat" type="button" title="Start a new conversation (applies to the next call)">new</button><button class="clearlog" id="clearlog" type="button">clear</button></div>
+    <div id="sidehead"><span>Conversation</span><span id="histmode" class="histmode" title="Viewing a past conversation - click to return to the live view">history &#10005;</span><button class="clearlog" id="refreshhist" type="button" title="Reload the saved chat log from disk (.jsonl)">refresh</button><button class="clearlog" id="newchat" type="button" title="Start a new conversation (applies to the next call)">new</button><button class="clearlog" id="clearlog" type="button">clear</button></div>
     <div id="transcript"></div>
     <form id="chatform">
       <input id="chatinput" type="text" placeholder="Type a message (optional)..." autocomplete="off">
@@ -177,6 +177,15 @@
         </div>
 
         <div class="tabpage" id="tabadv">
+          <div class="sect">Desktop app window</div>
+          <div class="field"><label>Browser for the app window</label>
+            <select id="cfg-UI_BROWSER"><option value="">System default (auto)</option></select>
+            <div class="hint">"System default" uses the browser Windows opens links with (Brave, Chrome, Edge, ...). Pick another installed browser to force it. Firefox opens a normal window (no app mode). Applies on the next start of start.bat.</div>
+          </div>
+          <div class="field"><label>Browser profile for the app window</label>
+            <select id="cfg-UI_PROFILE"><option value="1">Separate profile (recommended)</option><option value="0">My normal browser profile</option></select>
+            <div class="hint">A separate profile keeps the app window its own browser instance: instant close detection, and closing the terminal closes the window too. Mic permission is asked once inside that profile.</div>
+          </div>
           <div class="sect">Advanced</div>
           <div class="field"><label>Log level (needs agent restart)</label>
             <select id="cfg-LOG_LEVEL"><option value="DEBUG">DEBUG</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select>

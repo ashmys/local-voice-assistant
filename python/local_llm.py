@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -37,6 +38,20 @@ def to_openai_messages(chat_ctx) -> list[dict]:
     return msgs
 
 
+def _error_detail(exc: Exception) -> str:
+    """The most useful one-liner we can get out of an openai exception."""
+    body = getattr(exc, "body", None)
+    if body:
+        try:
+            if isinstance(body, str):
+                return body[:300]
+            return json.dumps(body)[:300]
+        except Exception:
+            pass
+    msg = getattr(exc, "message", None) or str(exc)
+    return (msg or type(exc).__name__)[:300]
+
+
 class TextgenStream(llm.LLMStream):
     def __init__(self, owner, *, chat_ctx, tools, conn_options):
         super().__init__(owner, chat_ctx=chat_ctx, tools=tools, conn_options=conn_options)
@@ -51,10 +66,45 @@ class TextgenStream(llm.LLMStream):
         if not messages:
             messages = [{"role": "system", "content": "You are a helpful voice assistant."}]
         t0 = time.time()
+        # The LLM call runs in its own task. If the user interrupts the turn
+        # (this coroutine gets cancelled), we wait briefly for the in-flight
+        # answer so the finished reply is still SAVED to the chat log (it is
+        # not spoken) - previously interrupted turns silently vanished from
+        # the .jsonl. Cancellation itself is always honored afterwards.
+        call = asyncio.ensure_future(asyncio.to_thread(owner.complete, messages))
         try:
-            text = await asyncio.to_thread(owner.complete, messages)
+            # shield(): cancelling THIS coroutine must not cancel the
+            # in-flight request itself, otherwise the answer is unreachable.
+            text = await asyncio.shield(call)
+        except asyncio.CancelledError:
+            rescued = None
+            try:
+                rescued = await asyncio.wait_for(asyncio.shield(call), timeout=8.0)
+            except asyncio.TimeoutError:
+                call.cancel()
+            except Exception as resc_exc:
+                call.cancel()
+                if owner.on_error is not None:
+                    try:
+                        owner.on_error(_error_detail(resc_exc))
+                    except Exception:
+                        pass
+            if rescued is not None:
+                logger.info("LLM reply ready in %.2fs (%d chars) "
+                            "[interrupted - saved to the chat log, not spoken]",
+                            time.time() - t0, len(rescued))
+                if owner.on_reply is not None:
+                    owner.on_reply(rescued, "b" + self._request_id)
+            else:
+                logger.info("LLM turn interrupted before an answer arrived")
+            raise  # honor the interruption
         except Exception as exc:
-            logger.error("textgen request failed: %s", exc)
+            logger.error("textgen request failed: %s", _error_detail(exc))
+            if owner.on_error is not None:
+                try:
+                    owner.on_error(_error_detail(exc))
+                except Exception:
+                    pass
             text = "Sorry, my language model did not answer. Please try again."
         dt = time.time() - t0
         logger.info("LLM reply ready in %.2fs (%d chars)", dt, len(text))
@@ -69,16 +119,21 @@ class TextgenStream(llm.LLMStream):
 
 
 class TextgenLLM(llm.LLM):
-    def __init__(self, *, base_url: str, api_key: str, model: str, on_reply=None):
+    def __init__(self, *, base_url: str, api_key: str, model: str,
+                 on_reply=None, on_error=None):
         super().__init__()
         import openai
 
+        # max_retries=2: a one-off 500 or connection reset from oobabooga/
+        # llama.cpp no longer kills the turn. timeout=30: a hung backend must
+        # not stall the conversation forever.
         self._client = openai.OpenAI(
-            base_url=base_url, api_key=api_key, max_retries=0,
+            base_url=base_url, api_key=api_key, max_retries=2, timeout=30.0,
             default_headers=PROVIDER_HEADERS,
         )
         self._model_name = model
         self.on_reply = on_reply
+        self.on_error = on_error
         logger.info("textgen LLM adapter ready (full-reply mode, model=%s)", model)
 
     @property
@@ -130,16 +185,24 @@ class RelayStream(llm.LLMStream):
                 publish(self._sent, self._msg_id, True)
             raise
         except Exception as exc:
-            logger.warning("relay stream ended (%s)", exc)
+            detail = _error_detail(exc)
+            logger.warning("relay stream ended (%s)", detail)
+            on_error = getattr(self._llm, "on_error", None)
+            if on_error is not None and not self._sent:
+                try:
+                    on_error(detail)
+                except Exception:
+                    pass
             if self._sent and publish is not None:
                 publish(self._sent, self._msg_id, True)
 
 
 class RelayLLM(llm.LLM):
-    def __init__(self, inner, publish_reply=None):
+    def __init__(self, inner, publish_reply=None, on_error=None):
         super().__init__()
         self._inner = inner
         self.on_reply = publish_reply
+        self.on_error = on_error
 
     @property
     def model(self) -> str:
@@ -158,12 +221,13 @@ class RelayLLM(llm.LLM):
         )
 
 
-def relay_llm(inner, publish_reply=None):
-    return RelayLLM(inner, publish_reply)
+def relay_llm(inner, publish_reply=None, on_error=None):
+    return RelayLLM(inner, publish_reply, on_error)
 
 
-def create_textgen_llm(*, base_url: str, api_key: str, model: str, on_reply=None):
+def create_textgen_llm(*, base_url: str, api_key: str, model: str,
+                       on_reply=None, on_error=None):
     # Empty key is fine for servers without auth (LM Studio, Ollama,
     # llama.cpp); the openai client just needs a non-empty placeholder.
     return TextgenLLM(base_url=base_url, api_key=api_key or "sk-no-key",
-                      model=model, on_reply=on_reply)
+                      model=model, on_reply=on_reply, on_error=on_error)

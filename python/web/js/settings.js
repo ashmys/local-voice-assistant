@@ -52,6 +52,36 @@ $("micdevice").addEventListener("change", () => {
   toast("Microphone saved - applies to the next call");
 });
 
+async function fillBrowserPicker(cfg) {
+  const sel = $("cfg-UI_BROWSER");
+  if (!sel) return;
+  let browsers = [];
+  try {
+    const d = await fetchJson("/api/browsers");
+    browsers = d.browsers || [];
+  } catch (e) {
+    console.warn("browser list failed", e);
+  }
+  // keep the static first option (System default) and the saved value
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">System default (auto)</option>';
+  browsers.forEach((b) => {
+    if (!b.id || b.id === "custom") return;
+    const label = b.name + (b.default ? " \u2014 default" : "") +
+      (b.chromium ? "" : " (normal window)");
+    if (!Array.from(sel.options).some((o) => o.value === b.id)) {
+      addOpt(sel, b.id, label);
+    }
+  });
+  const saved = cfg.UI_BROWSER || "";
+  if (saved) {
+    ensureOpt(sel, saved);
+    sel.value = saved;
+  } else if (keep) {
+    sel.value = keep;
+  }
+}
+
 async function loadConfigForm() {
   const [cfgR, sttR, ttsR] = await Promise.all([
     fetchJson("/api/config"),
@@ -59,6 +89,7 @@ async function loadConfigForm() {
     fetchJson("/api/models/tts"),
   ]);
   const cfg = cfgR.config || {};
+  fillBrowserPicker(cfg); // async, fills the dropdown when the list arrives
   for (const [k, el] of Object.entries(cfgEls())) {
     if (cfg[k] !== undefined && cfg[k] !== "") {
       if (el.tagName === "SELECT") ensureOpt(el, cfg[k]);
