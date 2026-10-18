@@ -64,71 +64,113 @@ def setting(key: str, default: str = "") -> str:
     return env_dict().get(key, os.environ.get(key, default))
 
 
+JOB_OBJECT_EXTENDED_LIMIT = 9
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+
 def setup_job_object():
     if os.name != "nt":
         return None
+    try:
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_ulonglong) for n in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
 
-    class IO_COUNTERS(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_ulonglong) for n in (
-            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
 
-    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_large_integer),
-            ("PerJobUserTimeLimit", ctypes.c_large_integer),
-            ("LimitFlags", ctypes.c_uint32),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", ctypes.c_uint32),
-            ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
-            ("PriorityClass", ctypes.c_uint32),
-            ("SchedulingClass", ctypes.c_uint32),
-        ]
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
 
-    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-            ("IoInfo", IO_COUNTERS),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = ctypes.c_void_p
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        k32.SetInformationJobObject.restype = ctypes.c_int
+        k32.SetInformationJobObject.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        k32.AssignProcessToJobObject.restype = ctypes.c_int
+        k32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
-    k32 = ctypes.windll.kernel32
-    job = k32.CreateJobObjectW(None, None)
-    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    info.BasicLimitInformation.LimitFlags = 0x200
-    k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))
-    log("Job Object active: closing this window shuts down all children")
-    return job
+        expected = ctypes.sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
+        if expected != 144:
+            log(f"job struct size {expected} unexpected (want 144) - skipping Job Object")
+            return None
+
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            log(f"CreateJobObjectW failed (winerror {ctypes.get_last_error()}) "
+                "- children stay alive after window close")
+            return None
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT,
+                                           ctypes.byref(info),
+                                           ctypes.sizeof(info)):
+            log(f"SetInformationJobObject failed (winerror {ctypes.get_last_error()}) "
+                "- children stay alive after window close")
+            k32.CloseHandle(job)
+            return None
+
+        log("Job Object active: closing this window shuts down all children")
+        return job
+    except Exception as exc:
+        log(f"Job Object setup failed ({exc}) - continuing without it")
+        return None
 
 
 JOB = None
+_K32 = None
 
 
 def assign_job(proc) -> None:
-    if JOB is None or os.name != "nt":
+    if JOB is None or _K32 is None or os.name != "nt":
         return
     try:
-        ctypes.windll.kernel32.AssignProcessToJobObject(JOB, int(proc._handle))
+        if not _K32.AssignProcessToJobObject(JOB, int(proc._handle)):
+            log(f"AssignProcessToJobObject failed (winerror {ctypes.get_last_error()})")
     except Exception as exc:
         log(f"job assign failed: {exc}")
 
 
 def spawn(name: str, argv: list) -> None:
     log(f"[{name}] starting: {' '.join(str(a) for a in argv)}")
-    proc = subprocess.Popen(
-        [str(a) for a in argv],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        cwd=str(ROOT),
-    )
+    try:
+        proc = subprocess.Popen(
+            [str(a) for a in argv],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            cwd=str(ROOT),
+        )
+    except FileNotFoundError:
+        log(f"[{name}] FAILED: executable not found: {argv[0]}")
+        log(f"[{name}] FIX -> re-run setup.bat, then start.bat again")
+        return
+    except OSError as exc:
+        log(f"[{name}] FAILED to start ({exc})")
+        return
     CHILDREN[name] = proc
     assign_job(proc)
 
@@ -302,12 +344,16 @@ async def api_chat_sessions(_request: web.Request) -> web.Response:
             except OSError:
                 continue
             if turns:
+                try:
+                    mtime = int(f.stat().st_mtime)
+                except OSError:
+                    mtime = 0
                 sessions.append({
                     "file": f.name,
                     "room": parse_room_from_history(f),
                     "turns": turns,
                     "first": first_user,
-                    "mtime": int(f.stat().st_mtime),
+                    "mtime": mtime,
                 })
     return web.json_response({"sessions": sessions[:100]})
 
@@ -346,7 +392,9 @@ async def api_config_post(request: web.Request) -> web.Response:
         body = await request.json()
     except ValueError:
         return web.json_response({"error": "invalid json"}, status=400)
-    updates = body.get("config") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid json"}, status=400)
+    updates = body.get("config")
     if not isinstance(updates, dict):
         return web.json_response({"error": "missing config object"}, status=400)
     current = env_dict()
@@ -367,7 +415,13 @@ async def api_config_post(request: web.Request) -> web.Response:
              "# Applies to the NEXT conversation after you click Save."]
     for k, v in sorted(current.items()):
         lines.append(f"{k}={v}")
-    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        log(f"config save FAILED: {exc}")
+        return web.json_response({"error": f"could not write {ENV_FILE.name}: {exc}"},
+                                 status=500)
     log("config saved (applies to the next conversation)")
     return web.json_response({"ok": True, "config": current})
 
@@ -380,15 +434,36 @@ async def api_models_tts(_request: web.Request) -> web.Response:
     return web.json_response(list_tts_models())
 
 
+def count_local_models() -> dict:
+    stt = 0
+    base = whisper_dir()
+    if base.is_dir():
+        stt = sum(1 for d in base.iterdir() if d.is_dir() and (d / "model.bin").is_file())
+    tts = len(list(piper_dir().glob("*.onnx"))) if piper_dir().is_dir() else 0
+    return {"stt": stt, "tts": tts}
+
+
 async def health(_request: web.Request) -> web.Response:
     lk_host, lk_port = livekit_target()
     lk_up = await asyncio.to_thread(_tcp_alive, lk_host, lk_port)
+    textgen_state = await asyncio.to_thread(check_textgen)
+    gpu_state = await asyncio.to_thread(check_gpu)
+    try:
+        kids = {name: ("up" if p.poll() is None else f"exit {p.returncode}")
+                for name, p in CHILDREN.items()}
+    except Exception:
+        kids = {}
+    lib_ok = (WEB_DIR / "livekit-client.js").is_file()
     return web.json_response({
         "ui": "ok",
         "python": platform.python_version(),
         "livekit": {"status": "up" if lk_up else "down", "url": setting("LIVEKIT_URL")},
-        "textgen": {"status": check_textgen(), "url": setting("TEXTGEN_BASE_URL")},
-        "lib_file": {"exists": (WEB_DIR / "livekit-client.js").is_file()},
+        "textgen": {"status": textgen_state, "url": setting("TEXTGEN_BASE_URL")},
+        "gpu": gpu_state,
+        "models": count_local_models(),
+        "children": kids,
+        "venv": VENV_PY.exists(),
+        "lib_file": {"exists": lib_ok},
     })
 
 
@@ -405,10 +480,16 @@ async def favicon(_request: web.Request) -> web.Response:
 
 
 async def token(_request: web.Request) -> web.Response:
-    identity = _request.query.get("identity") or f"user-{os.urandom(2).hex()}"
+    identity = (_request.query.get("identity") or f"user-{os.urandom(2).hex()}").strip()
+    if not re.fullmatch(r"[\w-]{1,64}", identity):
+        return web.json_response({"error": "bad identity"}, status=400)
     room = f"voice-{os.urandom(4).hex()}"
     key = setting("LIVEKIT_API_KEY", "devkey")
     secret = setting("LIVEKIT_API_SECRET", "")
+    if not key or not secret:
+        log("token REFUSED: LIVEKIT_API_KEY/SECRET missing - check user_data/.env.local")
+        return web.json_response(
+            {"error": "server has no LIVEKIT_API_KEY/SECRET configured"}, status=500)
     tk = (
         lk_api.AccessToken(key, secret)
         .with_identity(identity)
@@ -452,11 +533,16 @@ async def log_and_nocache(request: web.Request, handler):
 
 
 def main() -> None:
-    global JOB
+    global JOB, _K32
     if os.name == "nt" and not VENV_PY.exists():
         raise SystemExit("[  sup] .venv missing - run setup.bat first")
+    if not AGENT_SCRIPT.is_file():
+        raise SystemExit(f"[  sup] {AGENT_SCRIPT.name} missing - re-extract the kit")
+    if not (WEB_DIR / "index.html").is_file():
+        log("WARNING: python/web/index.html missing - UI will 404")
 
     JOB = setup_job_object()
+    _K32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
 
     agent_python = VENV_PY if VENV_PY.exists() else Path(sys.executable)
     _RESTART["lk"] = 3
@@ -467,7 +553,10 @@ def main() -> None:
         log("bin/livekit-server.exe missing - run setup.bat")
     spawn("agent", [agent_python, "-u", AGENT_SCRIPT, "dev"])
 
-    banner()
+    try:
+        banner()
+    except Exception as exc:
+        log(f"startup banner check failed ({exc}) - continuing")
 
     app = web.Application(middlewares=[log_and_nocache])
     app.router.add_get("/", index)
@@ -485,6 +574,10 @@ def main() -> None:
         web.run_app(app, host=HOST, port=PORT, print=None)
     except KeyboardInterrupt:
         pass
+    except OSError as exc:
+        log(f"CANNOT BIND {HOST}:{PORT} ({exc})")
+        log("FIX -> is another start.bat window open? Close it, or free port 8090.")
+        sys.exit(1)
     finally:
         stop_children()
 

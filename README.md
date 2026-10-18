@@ -41,8 +41,10 @@ browser mic -> LiveKit -> Silero VAD -> faster-whisper STT
 ## Using the web page
 
 - **Center orb** reacts to the assistant's voice; the **bottom bar** shows your mic.
+- **Top-left status row** shows the full condition: livekit, textgen, GPU, local STT/TTS model counts, and the agent worker - refreshed every 15 s.
+- **START runs a preflight check first**: LiveKit reachable, mic available, library present; warnings appear for textgen down or missing models. Failures are shown as a clear message instead of a silent stall.
 - **Chat bubble icon** (bottom right) opens the optional text chat: your typed words are answered through the same LLM and appear in the transcript.
-- **Gear icon** (top right) opens every setting: textgen URL/key, Whisper model + device, Piper voice, TTS speed, turn-taking timing, echo guard. Saving applies to the **next** conversation.
+- **Gear icon** (top right) opens every setting: LiveKit URL/key/secret, textgen URL/key/model, streaming mode, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
 - **Clock icon** (top right) browses past conversations, stored in `user_data/chat/`.
 
 ## Everyday use

@@ -9,5 +9,11 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 
+if not exist "python\server.py" (
+  echo [ERROR] python\server.py is missing - re-extract the kit completely.
+  pause
+  exit /b 1
+)
+
 ".venv\Scripts\python.exe" -u "python\server.py"
 pause

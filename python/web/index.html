@@ -41,19 +41,19 @@
   .iconbtn.active { color: var(--accent); border-color: var(--accent); }
 
   #center {
-    position: fixed; left: 50%; top: 44%; transform: translate(-50%, -50%);
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
     text-align: center; z-index: 5; pointer-events: none;
   }
   #state {
-    margin-top: 26px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase;
+    font-size: 15px; letter-spacing: .14em; text-transform: uppercase;
     color: var(--dim); transition: color .3s;
   }
   #state.speaking { color: var(--accent); }
   #hint { margin-top: 8px; font-size: 12.5px; color: var(--dim); opacity: .7; }
 
   #startbtn {
-    position: fixed; left: 50%; top: 62%; transform: translateX(-50%);
-    padding: 14px 42px; font-size: 16px; letter-spacing: .06em;
+    position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%);
+    padding: 13px 40px; font-size: 16px; letter-spacing: .06em;
     border-radius: 999px; border: 1px solid var(--accent);
     background: linear-gradient(135deg, rgba(110,168,255,.16), rgba(155,123,255,.16));
     color: var(--fg); cursor: pointer; z-index: 20; transition: all .2s ease;
@@ -110,6 +110,10 @@
   .closebtn:hover { color: var(--fg); }
   .sheetbody { flex: 1; overflow-y: auto; padding: 16px 18px; }
 
+  .sect { margin: 20px 0 10px; font-size: 11px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent);
+    border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  .sheetbody .sect:first-child { margin-top: 0; }
   .field { margin-bottom: 14px; }
   .field label { display: block; font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
     color: var(--dim); margin-bottom: 5px; }
@@ -121,6 +125,7 @@
   .field input[type=range] { width: 100%; accent-color: var(--accent); }
   .rangeval { float: right; color: var(--accent); font-size: 12px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
   .savebar { padding: 14px 18px; border-top: 1px solid var(--line); }
   #savebtn {
     width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--accent);
@@ -148,11 +153,11 @@
   #toast { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
     background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
     padding: 10px 18px; font-size: 13px; z-index: 50; opacity: 0; transition: opacity .3s;
-    pointer-events: none; }
+    pointer-events: none; max-width: min(560px, 90vw); text-align: center; }
   #toast.show { opacity: 1; }
   #health { position: fixed; top: 20px; left: 20px; font-size: 11px; color: var(--dim); z-index: 20; }
-  #health b { color: var(--ok); font-weight: 500; }
-  #health.bad b { color: var(--warn); }
+  #health b.ok { color: var(--ok); font-weight: 500; }
+  #health b.bad2 { color: var(--warn); font-weight: 500; }
 </style>
 </head>
 <body>
@@ -188,13 +193,23 @@
   <div class="sheet" id="settingsheet">
     <div class="sheethead"><h2>Settings</h2><button class="closebtn" id="closegear">&times;</button></div>
     <div class="sheetbody">
+      <div class="sect">Connection</div>
+      <div class="field"><label>LiveKit URL</label><input type="text" id="cfg-LIVEKIT_URL" placeholder="ws://127.0.0.1:7880"></div>
+      <div class="grid2">
+        <div class="field"><label>LiveKit API key</label><input type="text" id="cfg-LIVEKIT_API_KEY"></div>
+        <div class="field"><label>LiveKit API secret</label><input type="password" id="cfg-LIVEKIT_API_SECRET"></div>
+      </div>
+
+      <div class="sect">Language model</div>
       <div class="field"><label>textgen API URL</label><input type="text" id="cfg-TEXTGEN_BASE_URL"></div>
-      <div class="field"><label>API key</label><input type="password" id="cfg-TEXTGEN_API_KEY"></div>
+      <div class="field"><label>textgen API key</label><input type="password" id="cfg-TEXTGEN_API_KEY"></div>
       <div class="field"><label>Model name</label><input type="text" id="cfg-TEXTGEN_MODEL"></div>
       <div class="field"><label>Token streaming</label>
         <select id="cfg-LLM_STREAMING"><option value="0">Full reply first (stable)</option><option value="1">Stream tokens (live text)</option></select>
       </div>
-      <div class="field"><label>Whisper model (STT)</label><select id="cfg-WHISPER_MODEL"></select></div>
+
+      <div class="sect">Speech-to-text</div>
+      <div class="field"><label>Whisper model</label><select id="cfg-WHISPER_MODEL"></select></div>
       <div class="grid2">
         <div class="field"><label>Device</label>
           <select id="cfg-WHISPER_DEVICE"><option value="auto">Auto</option><option value="cuda">GPU (CUDA)</option><option value="cpu">CPU</option></select>
@@ -203,10 +218,36 @@
           <select id="cfg-WHISPER_COMPUTE"><option value="auto">Auto</option><option value="float16">float16</option><option value="int8">int8</option></select>
         </div>
       </div>
-      <div class="field"><label>Piper voice (TTS)</label><select id="cfg-TTS_VOICE"></select></div>
+      <div class="grid2">
+        <div class="field"><label>Language (auto = detect)</label>
+          <select id="cfg-WHISPER_LANGUAGE">
+            <option value="auto">auto</option><option value="en">en</option><option value="id">id</option>
+            <option value="ja">ja</option><option value="zh">zh</option><option value="ko">ko</option>
+            <option value="es">es</option><option value="fr">fr</option><option value="de">de</option>
+            <option value="pt">pt</option><option value="ru">ru</option><option value="ar">ar</option>
+            <option value="hi">hi</option>
+          </select>
+        </div>
+        <div class="field"><label>Beam width</label>
+          <select id="cfg-WHISPER_BEAM"><option value="1">1 (fast)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 (slow)</option></select>
+        </div>
+      </div>
+      <div class="grid3">
+        <div class="field"><label>Temperature</label><input type="text" id="cfg-WHISPER_TEMPERATURE" inputmode="decimal" placeholder="0.0"></div>
+        <div class="field"><label>Min logprob</label><input type="text" id="cfg-WHISPER_MIN_LOGPROB" inputmode="decimal" placeholder="-1.0"></div>
+        <div class="field"><label>Max compratio</label><input type="text" id="cfg-WHISPER_MAX_COMPRATIO" inputmode="decimal" placeholder="2.4"></div>
+      </div>
+      <div class="field"><label>VAD filter (skips silence)</label>
+        <select id="cfg-WHISPER_VAD_FILTER"><option value="0">Off</option><option value="1">On</option></select>
+      </div>
+
+      <div class="sect">Text-to-speech</div>
+      <div class="field"><label>Piper voice</label><select id="cfg-TTS_VOICE"></select></div>
       <div class="field"><label>TTS speed <span class="rangeval" id="val-TTS_SPEED"></span></label>
         <input type="range" id="cfg-TTS_SPEED" min="0.7" max="1.6" step="0.05">
       </div>
+
+      <div class="sect">Turn taking and echo</div>
       <div class="field"><label>End-of-sentence pause (s) <span class="rangeval" id="val-ENDPOINTING_DELAY"></span></label>
         <input type="range" id="cfg-ENDPOINTING_DELAY" min="0.3" max="2" step="0.05">
       </div>
@@ -220,6 +261,14 @@
       </div>
       <div class="field"><label>Echo guard</label>
         <select id="cfg-ECHO_GUARD"><option value="1">On (drops mic echo of the assistant)</option><option value="0">Off</option></select>
+      </div>
+      <div class="field"><label>Echo guard tail (s) <span class="rangeval" id="val-ECHO_GUARD_TAIL"></span></label>
+        <input type="range" id="cfg-ECHO_GUARD_TAIL" min="0" max="3" step="0.1">
+      </div>
+
+      <div class="sect">Advanced</div>
+      <div class="field"><label>Log level (needs agent restart)</label>
+        <select id="cfg-LOG_LEVEL"><option value="DEBUG">DEBUG</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select>
       </div>
     </div>
     <div class="savebar">
@@ -244,7 +293,7 @@ let room = null, live = false, msgCounter = 0;
 let bubbles = {};
 let agentCtx = null, micCtx = null, agentAn = null, micAn = null;
 let agentData = null, micData = null, rafId = 0;
-let micStream = null;
+let micStream = null, stateTimer = 0;
 
 function toast(text, ms) {
   const t = $("toast");
@@ -259,20 +308,83 @@ function setState(text, cls) {
   $("state").className = cls || "";
 }
 
+function pulseState(text) {
+  if (!live) return;
+  setState(text, text === "speaking" ? "speaking" : "");
+  clearTimeout(stateTimer);
+  stateTimer = setTimeout(() => { if (live) setState("listening"); }, 3000);
+}
+
+function micErrorText(e) {
+  const n = (e && e.name) || "";
+  if (n === "NotAllowedError" || n === "SecurityError") return "microphone permission denied - allow mic in the browser address bar";
+  if (n === "NotFoundError" || n === "DevicesNotFoundError") return "no microphone found";
+  if (n === "NotReadableError" || n === "TrackStartError") return "microphone is busy (another app is using it)";
+  return "microphone error: " + ((e && e.message) || n || "unknown");
+}
+
+function chip(name, ok, val) {
+  return name + " <b class=\"" + (ok ? "ok" : "bad2") + "\">" + val + "</b>";
+}
+
 async function checkHealth() {
   try {
     const r = await fetch("/health");
+    if (!r.ok) throw new Error("HTTP " + r.status);
     const h = await r.json();
-    const lk = h.livekit && h.livekit.status === "up";
-    const tg = h.textgen && (h.textgen.status || "").startsWith("up");
+    const lk = !!(h.livekit && h.livekit.status === "up");
+    const tg = !!(h.textgen && String(h.textgen.status || "").startsWith("up"));
+    const gpu = String(h.gpu || "").startsWith("YES");
+    const sttN = h.models ? Number(h.models.stt) || 0 : 0;
+    const ttsN = h.models ? Number(h.models.tts) || 0 : 0;
+    const lib = !!(h.lib_file && h.lib_file.exists);
+    const ag = !!(h.children && h.children.agent === "up");
     const el = $("health");
-    el.innerHTML = "livekit " + (lk ? "<b>up</b>" : "<b>down</b>") +
-      " &middot; textgen " + (tg ? "<b>up</b>" : "<b>down</b>");
-    el.className = lk && tg ? "" : "bad";
+    el.innerHTML = chip("livekit", lk, lk ? "up" : "down") + " &middot; " +
+      chip("textgen", tg, tg ? "up" : "down") + " &middot; " +
+      chip("gpu", gpu, gpu ? "yes" : "no") + " &middot; " +
+      chip("stt", sttN > 0, sttN) + " &middot; " +
+      chip("tts", ttsN > 0, ttsN) + " &middot; " +
+      chip("agent", ag, ag ? "up" : "down") +
+      (lib ? "" : " &middot; lib missing");
+    el.className = lk && tg && ag ? "" : "bad";
   } catch (e) {
     $("health").innerHTML = "server unreachable";
     $("health").className = "bad";
   }
+}
+
+async function precheck() {
+  const fatal = [], warn = [];
+  if (!window.LivekitClient) fatal.push("livekit-client.js failed to load - Ctrl+F5 or re-extract the kit");
+  let h = null;
+  try {
+    const r = await fetch("/health");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    h = await r.json();
+  } catch (e) {
+    fatal.push("backend unreachable (" + e.message + ")");
+  }
+  if (h) {
+    if (h.venv === false) fatal.push(".venv missing - run setup.bat");
+    if (h.lib_file && !h.lib_file.exists) fatal.push("livekit-client.js missing on server - re-extract the kit");
+    if (h.livekit && h.livekit.status !== "up") fatal.push("LiveKit server is down - restart start.bat");
+    if (h.children && h.children.agent && h.children.agent !== "up") warn.push("agent worker: " + h.children.agent);
+    if (h.textgen && !String(h.textgen.status || "").startsWith("up")) warn.push("textgen API is down - the bot cannot reply until it starts");
+    if (h.models) {
+      if (!Number(h.models.stt)) warn.push("no Whisper model downloaded yet - run setup.bat or check settings");
+      if (!Number(h.models.tts)) warn.push("no Piper voice downloaded yet - run setup.bat or check settings");
+    }
+  }
+  if (!fatal.length && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      fatal.push(micErrorText(e));
+    }
+  }
+  return { fatal, warn };
 }
 
 function addBubble(who, text, id, final) {
@@ -288,6 +400,7 @@ function addBubble(who, text, id, final) {
   div.textContent = text;
   div.classList.toggle("pending", !final);
   $("transcript").scrollTop = $("transcript").scrollHeight;
+  if (final) pulseState(who === "bot" ? "speaking" : "thinking");
   return div;
 }
 
@@ -297,9 +410,16 @@ function resetTranscript() {
 }
 
 async function connect() {
+  if (!window.LivekitClient) throw new Error("livekit-client.js missing");
   const r = await fetch("/token?identity=user-" + Math.random().toString(16).slice(2, 6));
-  if (!r.ok) throw new Error("token request failed");
+  if (!r.ok) {
+    let why = "HTTP " + r.status;
+    try { const j = await r.json(); if (j.error) why = j.error; } catch (e) {}
+    throw new Error("token request failed: " + why);
+  }
   const d = await r.json();
+  if (!d.url || !d.token) throw new Error(d.error || "bad token response");
+  resetTranscript();
   room = new LK.Room({
     adaptiveStream: false, dynacast: false,
     audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -308,33 +428,65 @@ async function connect() {
     if (topic !== "transcript") return;
     try {
       const m = JSON.parse(new TextDecoder().decode(payload));
-      addBubble(m.who, m.text, m.id, m.final !== false);
-    } catch (e) { /* ignore */ }
+      if (m && typeof m.text === "string") addBubble(m.who, m.text, m.id, m.final !== false);
+    } catch (e) {
+      console.warn("bad transcript packet", e);
+    }
   });
   room.on(LK.RoomEvent.TrackSubscribed, (track) => {
     if (track.kind === "audio") {
-      const el = track.attach();
-      el.style.display = "none";
-      document.body.appendChild(el);
+      try {
+        const el = track.attach();
+        el.style.display = "none";
+        document.body.appendChild(el);
+      } catch (e) {
+        console.warn("attach failed", e);
+      }
       hookAgentAudio(track);
     }
+  });
+  room.on(LK.RoomEvent.MediaDevicesError, (e) => {
+    toast(micErrorText(e), 4000);
   });
   room.on(LK.RoomEvent.Disconnected, () => {
     if (live) { live = false; setLiveUi(false); toast("Conversation ended"); }
   });
-  await room.prepareConnection(d.url, d.token);
-  await room.connect(d.url, d.token);
-  micStream = new MediaStream(
-    (room.localParticipant.getTrackPublications() || [])
-      .map((p) => p.track && p.track.mediaStreamTrack).filter(Boolean));
-  if (!micStream.getTracks().length) {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  try {
+    await room.prepareConnection(d.url, d.token);
+  } catch (e) {
+    console.warn("prepareConnection skipped", e);
   }
-  hookMicAudio(micStream);
+  await room.connect(d.url, d.token);
+  try {
+    micStream = new MediaStream(
+      (room.localParticipant.getTrackPublications() || [])
+        .map((p) => p.track && p.track.mediaStreamTrack).filter(Boolean));
+    if (!micStream.getTracks().length) {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+    hookMicAudio(micStream);
+  } catch (e) {
+    throw new Error(micErrorText(e));
+  }
 }
 
 async function start() {
   $("startbtn").disabled = true;
+  setState("checking");
+  let pc;
+  try {
+    pc = await precheck();
+  } catch (e) {
+    pc = { fatal: [String(e && e.message || e)], warn: [] };
+  }
+  if (pc.fatal.length) {
+    setState("blocked");
+    toast("Cannot start: " + pc.fatal[0] + (pc.fatal.length > 1 ? " (+" + (pc.fatal.length - 1) + " more, see console)" : ""), 4200);
+    console.warn("precheck fatal:", pc.fatal, "warnings:", pc.warn);
+    $("startbtn").disabled = false;
+    return;
+  }
+  pc.warn.forEach((w) => toast(w, 3600));
   setState("connecting");
   try {
     await connect();
@@ -345,14 +497,15 @@ async function start() {
   } catch (e) {
     console.error(e);
     setState("ready");
-    toast("Could not connect: " + e.message);
+    toast("Could not connect: " + (e && e.message ? e.message : e), 4000);
   }
   $("startbtn").disabled = false;
 }
 
 async function stop() {
   live = false;
-  try { if (room) await room.disconnect(); } catch (e) { /* ignore */ }
+  clearTimeout(stateTimer);
+  try { if (room) await room.disconnect(); } catch (e) { console.warn("disconnect", e); }
   cleanupAudio();
   setLiveUi(false);
   setState("ready");
@@ -365,20 +518,23 @@ function setLiveUi(on) {
   if (!on) { setState("ready"); }
 }
 
-$("startbtn").addEventListener("click", () => (live ? stop() : start()));
+$("startbtn").addEventListener("click", () => {
+  try { (live ? stop() : start()); } catch (e) { console.error(e); toast("Button error: " + e.message); }
+});
 
 $("chatform").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const input = $("chatinput");
   const text = (input.value || "").trim();
-  if (!text || !room || !live) { if (!live) toast("Start a conversation first"); return; }
+  if (!text) return;
+  if (!room || !live) { toast("Start a conversation first"); return; }
   input.value = "";
   try {
     await room.localParticipant.publishData(
       new TextEncoder().encode(JSON.stringify({ text })),
       { reliable: true, topic: "chat-input" });
   } catch (e) {
-    toast("Send failed: " + e.message);
+    toast("Send failed: " + (e && e.message ? e.message : e));
   }
 });
 
@@ -391,79 +547,112 @@ $("chatfab").addEventListener("click", () => {
 
 $("gearbtn").addEventListener("click", async () => {
   $("settingsheet").classList.add("open");
-  await loadConfigForm();
+  try {
+    await loadConfigForm();
+  } catch (e) {
+    toast("Could not load settings: " + (e && e.message ? e.message : e));
+  }
 });
 $("closegear").addEventListener("click", () => $("settingsheet").classList.remove("open"));
 $("histbtn").addEventListener("click", () => {
   $("histsheet").classList.add("open");
-  loadHistoryList();
+  try { loadHistoryList(); } catch (e) { toast("History error: " + e.message); }
 });
 $("closehist").addEventListener("click", () => $("histsheet").classList.remove("open"));
 
+function getCtx(which) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (which === "agent") {
+    agentCtx = agentCtx || new AC();
+    if (agentCtx.state === "suspended") agentCtx.resume().catch(() => {});
+    return agentCtx;
+  }
+  micCtx = micCtx || new AC();
+  if (micCtx.state === "suspended") micCtx.resume().catch(() => {});
+  return micCtx;
+}
+
 function hookAgentAudio(track) {
   try {
-    agentCtx = agentCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (agentCtx.state === "suspended") agentCtx.resume();
-    const src = agentCtx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
-    agentAn = agentCtx.createAnalyser();
+    if (!track || !track.mediaStreamTrack) throw new Error("no media stream track");
+    const ctx = getCtx("agent");
+    if (!ctx) throw new Error("WebAudio unavailable");
+    const src = ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+    agentAn = ctx.createAnalyser();
     agentAn.fftSize = 128;
     src.connect(agentAn);
     agentData = new Uint8Array(agentAn.frequencyBinCount);
-  } catch (e) { console.warn("agent analyser failed", e); }
+  } catch (e) {
+    console.warn("agent analyser failed", e);
+  }
 }
 
 function hookMicAudio(stream) {
   try {
-    micCtx = micCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (micCtx.state === "suspended") micCtx.resume();
-    const src = micCtx.createMediaStreamSource(stream);
-    micAn = micCtx.createAnalyser();
+    const ctx = getCtx("mic");
+    if (!ctx) throw new Error("WebAudio unavailable");
+    const src = ctx.createMediaStreamSource(stream);
+    micAn = ctx.createAnalyser();
     micAn.fftSize = 128;
     src.connect(micAn);
     micData = new Uint8Array(micAn.frequencyBinCount);
-  } catch (e) { console.warn("mic analyser failed", e); }
+  } catch (e) {
+    console.warn("mic analyser failed", e);
+  }
 }
 
 function cleanupAudio() {
-  cancelAnimationFrame(rafId);
   try { micStream && micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
-  micStream = null; micAn = null; agentAn = null;
+  micStream = null; micAn = null; agentAn = null; agentData = null; micData = null;
   clearCanvas($("stage")); clearCanvas($("miccanvas"));
 }
 
 function clearCanvas(c) {
-  const ctx = c.getContext("2d");
-  ctx.clearRect(0, 0, c.width, c.height);
+  try {
+    const ctx = c.getContext("2d");
+    ctx.clearRect(0, 0, c.width, c.height);
+  } catch (e) {}
 }
 
 const stage = $("stage"), sctx = stage.getContext("2d");
 const micc = $("miccanvas"), mctx = micc.getContext("2d");
 
 function fitCanvas() {
-  stage.width = innerWidth * devicePixelRatio;
-  stage.height = innerHeight * devicePixelRatio;
-  micc.width = micc.clientWidth * devicePixelRatio;
-  micc.height = micc.clientHeight * devicePixelRatio;
+  try {
+    stage.width = Math.max(1, Math.floor(innerWidth * devicePixelRatio));
+    stage.height = Math.max(1, Math.floor(innerHeight * devicePixelRatio));
+    micc.width = Math.max(1, Math.floor(micc.clientWidth * devicePixelRatio));
+    micc.height = Math.max(1, Math.floor(micc.clientHeight * devicePixelRatio));
+  } catch (e) {
+    console.warn("fitCanvas failed", e);
+  }
 }
-addEventListener("resize", fitCanvas);
+addEventListener("resize", () => { try { fitCanvas(); } catch (e) {} });
+addEventListener("orientationchange", () => setTimeout(fitCanvas, 250));
 fitCanvas();
 
 let phase = 0;
 function draw() {
   phase += 0.015;
-  drawOrb();
-  drawMic();
+  try {
+    if (agentAn && agentData) agentAn.getByteFrequencyData(agentData);
+    if (micAn && micData) micAn.getByteFrequencyData(micData);
+    drawOrb();
+    drawMic();
+  } catch (e) {
+    console.warn("draw failed", e);
+  }
   rafId = requestAnimationFrame(draw);
 }
 
 function drawOrb() {
   const w = stage.width, h = stage.height;
   sctx.clearRect(0, 0, w, h);
-  const cx = w / 2, cy = h * 0.44;
-  const base = Math.min(w, h) * 0.16;
+  const cx = w / 2, cy = h / 2;
+  const base = Math.min(w, h) * 0.13;
   let level = 0;
   if (agentAn && agentData) {
-    agentAn.getByteFrequencyData(agentData);
     let sum = 0;
     for (let i = 0; i < agentData.length; i++) sum += agentData[i];
     level = sum / (agentData.length * 255);
@@ -481,7 +670,7 @@ function drawOrb() {
   const bars = 72;
   for (let i = 0; i < bars; i++) {
     const ang = (i / bars) * Math.PI * 2 + phase * 0.4;
-    const v = agentAn && agentData
+    const v = agentData
       ? agentData[Math.floor(i / bars * agentData.length * 0.7)] / 255
       : 0;
     const amp = idle + v * 1.1;
@@ -514,46 +703,62 @@ function drawMic() {
   const bars = 48, gap = 3 * devicePixelRatio;
   const bw = (w - gap * (bars - 1)) / bars;
   for (let i = 0; i < bars; i++) {
-    let v = 0;
-    if (micAn && micData) {
-      micAn.getByteFrequencyData(micData);
-      v = micData[Math.floor(i / bars * micData.length * 0.6)] / 255;
-    }
+    const v = micData
+      ? micData[Math.floor(i / bars * micData.length * 0.6)] / 255
+      : 0;
     const bh = Math.max(2 * devicePixelRatio, v * h * 0.92);
     const x = i * (bw + gap);
     const y = (h - bh) / 2;
     mctx.fillStyle = "rgba(110,168,255," + (0.25 + v * 0.7) + ")";
-    mctx.beginPath();
     const rr = Math.min(bw / 2, 3 * devicePixelRatio);
-    mctx.roundRect(x, y, bw, bh, rr);
+    mctx.beginPath();
+    if (mctx.roundRect) mctx.roundRect(x, y, bw, bh, rr);
+    else mctx.rect(x, y, bw, bh);
     mctx.fill();
   }
 }
 draw();
 
+function ensureOpt(sel, val) {
+  if (!sel) return;
+  const has = Array.from(sel.options).some((o) => o.value === val);
+  if (!has && val) addOpt(sel, val, val);
+}
+
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + " -> HTTP " + r.status);
+  return r.json();
+}
+
 async function loadConfigForm() {
-  try {
-    const [cfgR, sttR, ttsR] = await Promise.all([
-      fetch("/api/config").then((r) => r.json()),
-      fetch("/api/models/stt").then((r) => r.json()),
-      fetch("/api/models/tts").then((r) => r.json()),
-    ]);
-    const cfg = cfgR.config || {};
-    for (const [k, el] of Object.entries(cfgEls())) {
-      if (cfg[k] !== undefined) el.value = cfg[k];
-      if (el.type === "range") updateRange(k);
+  const [cfgR, sttR, ttsR] = await Promise.all([
+    fetchJson("/api/config"),
+    fetchJson("/api/models/stt"),
+    fetchJson("/api/models/tts"),
+  ]);
+  const cfg = cfgR.config || {};
+  for (const [k, el] of Object.entries(cfgEls())) {
+    if (cfg[k] !== undefined && cfg[k] !== "") {
+      if (el.tagName === "SELECT") ensureOpt(el, cfg[k]);
+      el.value = cfg[k];
     }
-    const sel = $("cfg-WHISPER_MODEL");
-    sel.innerHTML = "";
-    (sttR.local_folders || []).forEach((m) => addOpt(sel, m.name, m.name + " (folder, " + m.size_mb + " MB)"));
-    (sttR.presets || []).forEach((m) => addOpt(sel, m.name, m.name + " (" + m.size_mb + " MB)" + (m.local ? " \u2713" : "")));
-    if (cfg.WHISPER_MODEL) sel.value = cfg.WHISPER_MODEL;
-    const vsel = $("cfg-TTS_VOICE");
-    vsel.innerHTML = "";
-    (ttsR.voices || []).forEach((v) => addOpt(vsel, v.name, v.name + (v.local ? " \u2713" : " (download needed)")));
-    if (cfg.TTS_VOICE) vsel.value = cfg.TTS_VOICE;
-  } catch (e) {
-    toast("Could not load settings: " + e.message);
+    if (el.type === "range") updateRange(k);
+  }
+  const sel = $("cfg-WHISPER_MODEL");
+  sel.innerHTML = "";
+  (sttR.local_folders || []).forEach((m) => addOpt(sel, m.name, m.name + " (folder, " + m.size_mb + " MB)"));
+  (sttR.presets || []).forEach((m) => addOpt(sel, m.name, m.name + " (" + m.size_mb + " MB)" + (m.local ? " \u2713" : "")));
+  if (cfg.WHISPER_MODEL) {
+    ensureOpt(sel, cfg.WHISPER_MODEL);
+    sel.value = cfg.WHISPER_MODEL;
+  }
+  const vsel = $("cfg-TTS_VOICE");
+  vsel.innerHTML = "";
+  (ttsR.voices || []).forEach((v) => addOpt(vsel, v.name, v.name + (v.local ? " \u2713" : " (download needed)")));
+  if (cfg.TTS_VOICE) {
+    ensureOpt(vsel, cfg.TTS_VOICE);
+    vsel.value = cfg.TTS_VOICE;
   }
 }
 
@@ -588,12 +793,17 @@ $("savebtn").addEventListener("click", async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) {
+      let why = "HTTP " + r.status;
+      try { const j = await r.json(); if (j.error) why = j.error; } catch (e) {}
+      throw new Error(why);
+    }
     msg.textContent = "Saved - applies to your NEXT conversation.";
     toast("Settings saved");
+    checkHealth();
   } catch (e) {
     msg.style.color = "var(--warn)";
-    msg.textContent = "Save failed: " + e.message;
+    msg.textContent = "Save failed: " + (e && e.message ? e.message : e);
   }
 });
 
@@ -601,8 +811,8 @@ async function loadHistoryList() {
   const body = $("histbody");
   body.innerHTML = '<div class="empty">loading...</div>';
   try {
-    const r = await fetch("/api/chat/sessions");
-    const d = await r.json();
+    const d = await fetchJson("/api/chat/sessions");
+    if (d.error) throw new Error(d.error);
     if (!(d.sessions || []).length) {
       body.innerHTML = '<div class="empty">No conversations yet.<br>They appear here after you talk.</div>';
       return;
@@ -611,40 +821,78 @@ async function loadHistoryList() {
     d.sessions.forEach((s) => {
       const div = document.createElement("div");
       div.className = "sess";
-      const when = new Date(s.mtime * 1000).toLocaleString();
-      div.innerHTML = '<div class="stitle">' + s.turns + ' messages</div>' +
-        '<div class="sdate">' + when + '</div>' +
-        '<div class="sprev"></div>';
-      div.querySelector(".sprev").textContent = s.first || "(no user text)";
-      div.addEventListener("click", () => loadHistorySession(s.file));
+      const when = new Date((s.mtime || 0) * 1000).toLocaleString();
+      const title = document.createElement("div");
+      title.className = "stitle";
+      title.textContent = (s.turns || 0) + " messages - " + (s.room || "room");
+      const date = document.createElement("div");
+      date.className = "sdate";
+      date.textContent = when;
+      const prev = document.createElement("div");
+      prev.className = "sprev";
+      prev.textContent = s.first || "(no user text)";
+      div.appendChild(title); div.appendChild(date); div.appendChild(prev);
+      div.addEventListener("click", () => {
+        loadHistorySession(s.file).catch((e) => toast("History error: " + e.message));
+      });
       body.appendChild(div);
     });
   } catch (e) {
-    body.innerHTML = '<div class="empty">Failed to load: ' + e.message + "</div>";
+    body.innerHTML = "";
+    const err = document.createElement("div");
+    err.className = "empty";
+    err.textContent = "Failed to load: " + (e && e.message ? e.message : e);
+    body.appendChild(err);
   }
+}
+
+function backLink(body) {
+  const span = document.createElement("span");
+  span.className = "backlink";
+  span.textContent = "\u2190 back to list";
+  span.addEventListener("click", () => {
+    loadHistoryList().catch((e) => toast("History error: " + e.message));
+  });
+  body.appendChild(span);
 }
 
 async function loadHistorySession(file) {
   const body = $("histbody");
-  body.innerHTML = '<span class="backlink">&larr; back to list</span><div class="empty">loading...</div>';
-  body.querySelector(".backlink").addEventListener("click", loadHistoryList);
+  body.innerHTML = '<div class="empty">loading...</div>';
   try {
-    const r = await fetch("/api/chat/session?file=" + encodeURIComponent(file));
-    const d = await r.json();
+    const d = await fetchJson("/api/chat/session?file=" + encodeURIComponent(file));
     if (d.error) throw new Error(d.error);
-    body.innerHTML = '<span class="backlink">&larr; back to list</span>';
-    body.querySelector(".backlink").addEventListener("click", loadHistoryList);
-    (d.messages || []).forEach((m) => {
+    body.innerHTML = "";
+    backLink(body);
+    if (!(d.messages || []).length) {
+      const none = document.createElement("div");
+      none.className = "empty";
+      none.textContent = "This session has no messages.";
+      body.appendChild(none);
+      return;
+    }
+    d.messages.forEach((m) => {
       const div = document.createElement("div");
       div.className = "histmsg " + (m.who === "user" ? "user" : "bot");
-      div.innerHTML = '<span class="hm-who">' + (m.who === "user" ? "you" : "assistant") + "</span>" +
-        '<span class="hm-ts">' + (m.ts || "") + "</span>" +
-        '<div class="hm-text"></div>';
-      div.querySelector(".hm-text").textContent = m.text;
+      const who = document.createElement("span");
+      who.className = "hm-who";
+      who.textContent = m.who === "user" ? "you" : "assistant";
+      const ts = document.createElement("span");
+      ts.className = "hm-ts";
+      ts.textContent = m.ts || "";
+      const txt = document.createElement("div");
+      txt.className = "hm-text";
+      txt.textContent = m.text;
+      div.appendChild(who); div.appendChild(ts); div.appendChild(txt);
       body.appendChild(div);
     });
   } catch (e) {
-    body.innerHTML += '<div class="empty">Failed: ' + e.message + "</div>";
+    body.innerHTML = "";
+    backLink(body);
+    const err = document.createElement("div");
+    err.className = "empty";
+    err.textContent = "Failed: " + (e && e.message ? e.message : e);
+    body.appendChild(err);
   }
 }
 
