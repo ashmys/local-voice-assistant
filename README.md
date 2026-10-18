@@ -40,11 +40,11 @@ browser mic -> LiveKit -> Silero VAD -> faster-whisper STT
 
 ## Using the web page
 
-- **Voice-call layout**: your messages and the assistant's answers appear in the **left panel** (typed input optional), the AI orb sits dead-center, and the **round play/stop button** at the center bottom starts/stops the call.
-- **Center orb** reacts to the assistant's voice; the **bar above the button** shows your mic.
-- **Top-left status row** shows the full condition: livekit, textgen, GPU, local STT/TTS model counts, and the agent worker - refreshed every 15 s.
+- **Voice-call layout**: your messages and the assistant's answers appear in the **left panel**, docked flush to the window edge (typed input optional), the AI orb canvas sits dead-center of the window, and the **round play/stop button** at the center bottom starts/stops the call.
+- **Center orb** is drawn on a dedicated fullscreen canvas behind everything, so it is always exactly centered; it reacts to the assistant's voice. The **bar above the button** shows your mic.
+- **Top-left status card** is live and color-coded: dot + word (ready / connecting / live - listening / assistant speaking / server down), plus your mic state (mic on / mic active / mic muted / mic off) and service chips (livekit, textgen, GPU, STT/TTS models, agent) refreshed every 15 s.
 - **Call button runs a preflight check first**: LiveKit reachable, mic available, library present; warnings appear for textgen down or missing models. Failures are shown as a clear message instead of a silent stall.
-- **Gear icon** (top right) opens an almost-fullscreen settings window with tabs (Connection / Speech / Behavior / Advanced) covering every key: LiveKit URL/key/secret, textgen URL/key/model, streaming mode, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
+- **Gear icon** (top right) opens an almost-fullscreen settings window with tabs (Connection / Speech / Behavior / Advanced) covering every key: LiveKit URL/key/secret, textgen URL/key/model, streaming mode, microphone input device, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
 - **Clock icon** (top right) browses past conversations, stored in `user_data/chat/`.
 
 ## Everyday use
@@ -63,6 +63,7 @@ browser mic -> LiveKit -> Silero VAD -> faster-whisper STT
 | Whisper shows `cpu` although you have a GPU | Gear icon -> Device = `cuda`. If cuDNN errors appear, re-run `setup.bat` step 1 (installs nvidia-cudnn-cu12). |
 | Agent log: `textgen API key MISMATCH (HTTP 401)` | Gear icon -> API key must match textgen's `--api-key`. Save; it applies to the next conversation. |
 | Agent hears itself / answers its own voice | Keep Echo guard ON (gear icon). Headphones avoid the issue entirely. |
+| Text chat works but the bot never hears my voice | The mic is now published automatically when the call starts. If the status card says `mic on` but stays silent, pick another input device in gear icon -> Connection -> Microphone (applies to the next call). If Windows blocks capture entirely: Settings -> Privacy & security -> Microphone -> allow desktop apps. A red `Mic is connected but silent` toast means the browser delivers no signal - check the device and Windows privacy settings. |
 | Text replies but no sound | Check the Piper voice exists in `user_data/models/piper/` (`<name>.onnx` + `<name>.onnx.json`). |
 | `large-v3-turbo` or `large-v3` feels slow | On a 6 GB GPU use `small` or `medium` - the big models trade speed for accuracy. |
 | Nothing responds at all | In the `start.bat` window: `textgen API: up` and `LiveKit -> UP` must both show. Fix whichever is down first. |

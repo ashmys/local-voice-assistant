@@ -391,14 +391,14 @@ async def voice_agent(ctx: agents.JobContext) -> None:
         logger.info("Agent joined room %s", ctx.room.name)
         cfg = load_config()
         try:
-            vad, stt, tts = get_models(cfg)
+            vad, stt, tts = await asyncio.to_thread(get_models, cfg)
         except Exception:
             logger.exception("Loading models with the new settings FAILED - "
                              "retrying with the previous settings. Check the "
                              "model/voice names in the web UI.")
             prev = dict(cfg)
             prev.update(_MODELS.get("last_good") or {k: CONFIG_DEFAULTS.get(k, "") for k in HEAVY_KEYS})
-            vad, stt, tts = get_models(prev)
+            vad, stt, tts = await asyncio.to_thread(get_models, prev)
 
         hub = TranscriptHub(ctx.room, new_history_path(ctx.room.name))
         guard = build_echo_guard(cfg)

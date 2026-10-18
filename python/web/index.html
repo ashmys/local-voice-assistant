@@ -27,7 +27,7 @@
     font-family: "Segoe UI", system-ui, sans-serif;
     overflow: hidden; user-select: none;
   }
-  #stage { position: fixed; inset: 0; }
+  #stage { position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; }
   canvas { display: block; }
 
   .corner { position: fixed; top: 16px; right: 16px; display: flex; gap: 10px; z-index: 30; }
@@ -77,13 +77,13 @@
   #miclabel { font-size: 10px; letter-spacing: .2em; color: var(--dim); margin-top: 2px; opacity: .55; }
 
   #side {
-    position: fixed; left: 14px; top: 68px; bottom: 132px; width: min(330px, 40vw);
+    position: fixed; left: 0; top: 0; bottom: 0; width: min(340px, 42vw);
     display: flex; flex-direction: column;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
-    z-index: 25; overflow: hidden; backdrop-filter: blur(12px);
-    transition: transform .22s ease, opacity .22s ease;
+    background: rgba(13,16,24,0.9); border-right: 1px solid var(--line);
+    z-index: 25; overflow: hidden; backdrop-filter: blur(14px);
+    transition: transform .24s ease;
   }
-  #side.hidden { transform: translateX(-26px); opacity: 0; pointer-events: none; }
+  #side.hidden { transform: translateX(-102%); }
   #sidehead {
     padding: 12px 16px; border-bottom: 1px solid var(--line);
     font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
@@ -109,8 +109,9 @@
     border-radius: 10px; padding: 0 16px; cursor: pointer; font-size: 14px;
   }
   @media (max-width: 860px) {
-    #side { width: auto; left: 10px; right: 10px; top: 64px; bottom: 140px; }
+    #side { width: min(86vw, 340px); }
     #micdock { width: min(420px, 80vw); }
+    body.panel-open #status { left: 14px; }
   }
 
   .modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
@@ -179,9 +180,36 @@
     padding: 10px 18px; font-size: 13px; z-index: 50; opacity: 0; transition: opacity .3s;
     pointer-events: none; max-width: min(560px, 90vw); text-align: center; }
   #toast.show { opacity: 1; }
-  #health { position: fixed; top: 20px; left: 20px; font-size: 11px; color: var(--dim); z-index: 20; }
-  #health b.ok { color: var(--ok); font-weight: 500; }
-  #health b.bad2 { color: var(--warn); font-weight: 500; }
+  #status {
+    position: fixed; top: 14px; left: 14px; z-index: 40;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 10px 14px 9px; backdrop-filter: blur(10px);
+    transition: left .24s ease;
+  }
+  body.panel-open #status { left: calc(min(340px, 42vw) + 26px); }
+  #strow { display: flex; align-items: center; gap: 9px; }
+  #stdot {
+    width: 11px; height: 11px; border-radius: 50%; background: #64748b; flex: none;
+    transition: background .3s ease;
+  }
+  #stdot.ok { background: var(--ok); }
+  #stdot.warn { background: var(--warn); }
+  #stdot.err { background: #f87171; }
+  #stdot.listen { background: #22d3ee; }
+  #stdot.speak { background: var(--accent2); }
+  #stdot.pulse { animation: dotpulse 1.3s ease-in-out infinite; }
+  @keyframes dotpulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.45); opacity: .7; } }
+  #stword {
+    font-size: 13px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+    white-space: nowrap;
+  }
+  #stmic { margin-left: auto; padding-left: 14px; font-size: 10.5px; color: var(--dim); letter-spacing: .06em; white-space: nowrap; }
+  #stchips {
+    margin-top: 7px; font-size: 10.5px; color: var(--dim); letter-spacing: .02em;
+    max-width: 300px; line-height: 1.7;
+  }
+  #stchips b.ok { color: var(--ok); font-weight: 500; }
+  #stchips b.bad2 { color: var(--warn); font-weight: 500; }
 </style>
 </head>
 <body>
@@ -233,6 +261,10 @@
           <div class="grid2">
             <div class="field"><label>LiveKit API key</label><input type="text" id="cfg-LIVEKIT_API_KEY"></div>
             <div class="field"><label>LiveKit API secret</label><input type="password" id="cfg-LIVEKIT_API_SECRET"></div>
+          </div>
+          <div class="sect">Microphone (browser capture)</div>
+          <div class="field"><label>Input device (applies to the next call)</label>
+            <select id="micdevice"><option value="">System default</option></select>
           </div>
           <div class="sect">Language model</div>
           <div class="field"><label>textgen API URL</label><input type="text" id="cfg-TEXTGEN_BASE_URL"></div>
@@ -328,7 +360,14 @@
     </div>
   </div>
 
-  <div id="health">checking...</div>
+  <div id="status">
+    <div id="strow">
+      <span id="stdot"></span>
+      <span id="stword">starting</span>
+      <span id="stmic"></span>
+    </div>
+    <div id="stchips">checking services...</div>
+  </div>
   <div id="toast"></div>
 
 <script>
@@ -343,6 +382,8 @@ let agentCtx = null, micCtx = null, agentAn = null, micAn = null;
 let agentData = null, micData = null, rafId = 0;
 let micStream = null, stateTimer = 0;
 let lastEcho = { text: "", at: 0 };
+let micPubOk = false, micSilenceSince = 0, micWarned = false;
+let srvErr = false, srvDegraded = false, stCache = "\t\t\t";
 
 function toast(text, ms) {
   const t = $("toast");
@@ -388,7 +429,7 @@ async function checkHealth() {
     const ttsN = h.models ? Number(h.models.tts) || 0 : 0;
     const lib = !!(h.lib_file && h.lib_file.exists);
     const ag = !!(h.children && h.children.agent === "up");
-    const el = $("health");
+    const el = $("stchips");
     el.innerHTML = chip("livekit", lk, lk ? "up" : "down") + " &middot; " +
       chip("textgen", tg, tg ? "up" : "down") + " &middot; " +
       chip("gpu", gpu, gpu ? "yes" : "no") + " &middot; " +
@@ -396,10 +437,12 @@ async function checkHealth() {
       chip("tts", ttsN > 0, ttsN) + " &middot; " +
       chip("agent", ag, ag ? "up" : "down") +
       (lib ? "" : " &middot; lib missing");
-    el.className = lk && tg && ag ? "" : "bad";
+    srvErr = !lk || !ag;
+    srvDegraded = !srvErr && !tg;
   } catch (e) {
-    $("health").innerHTML = "server unreachable";
-    $("health").className = "bad";
+    $("stchips").innerHTML = "server unreachable";
+    srvErr = true;
+    srvDegraded = false;
   }
 }
 
@@ -472,9 +515,13 @@ async function connect() {
   const d = await r.json();
   if (!d.url || !d.token) throw new Error(d.error || "bad token response");
   resetTranscript();
+  const dev = (() => { try { return localStorage.getItem("micDeviceId") || ""; } catch (e) { return ""; } })();
   room = new LK.Room({
     adaptiveStream: false, dynacast: false,
-    audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    audioCaptureDefaults: {
+      echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+      deviceId: dev ? { ideal: dev } : undefined,
+    },
   });
   room.on(LK.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
     if (topic !== "transcript") return;
@@ -510,15 +557,22 @@ async function connect() {
   }
   await room.connect(d.url, d.token);
   try {
-    micStream = new MediaStream(
-      (room.localParticipant.getTrackPublications() || [])
-        .map((p) => p.track && p.track.mediaStreamTrack).filter(Boolean));
-    if (!micStream.getTracks().length) {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    }
-    hookMicAudio(micStream);
+    await room.localParticipant.setMicrophoneEnabled(true);
   } catch (e) {
     throw new Error(micErrorText(e));
+  }
+  const pub = room.localParticipant.getTrackPublication(LK.Track.Source.Microphone);
+  if (!pub || !pub.track || !pub.track.mediaStreamTrack) {
+    throw new Error("microphone track was not published - stop and start the call again");
+  }
+  micPubOk = true;
+  micWarned = false;
+  micSilenceSince = 0;
+  try {
+    micStream = new MediaStream([pub.track.mediaStreamTrack]);
+    hookMicAudio(micStream);
+  } catch (e) {
+    console.warn("mic analyser failed", e);
   }
 }
 
@@ -549,6 +603,7 @@ async function startCall() {
   } catch (e) {
     console.error(e);
     setState("ready");
+    micPubOk = false;
     toast("Could not connect: " + (e && e.message ? e.message : e), 4000);
   }
   $("callbtn").disabled = false;
@@ -556,6 +611,8 @@ async function startCall() {
 
 async function stopCall() {
   live = false;
+  micPubOk = false;
+  micWarned = false;
   clearTimeout(stateTimer);
   try { if (room) await room.disconnect(); } catch (e) { console.warn("disconnect", e); }
   cleanupAudio();
@@ -601,6 +658,7 @@ let sideOpen = innerWidth >= 1100;
 
 function applySide() {
   sideEl.classList.toggle("hidden", !sideOpen);
+  document.body.classList.toggle("panel-open", sideOpen);
 }
 
 $("chaticon").addEventListener("click", () => {
@@ -614,6 +672,7 @@ function closeModal(id) { $(id).classList.remove("open"); }
 
 $("gearbtn").addEventListener("click", async () => {
   openModal("settingsheet");
+  fillMicDevices();
   try {
     await loadConfigForm();
   } catch (e) {
@@ -695,13 +754,80 @@ function clearCanvas(c) {
   } catch (e) {}
 }
 
+function micLevel() {
+  if (!micAn || !micData) return 0;
+  let m = 0;
+  for (let i = 0; i < micData.length; i++) { if (micData[i] > m) m = micData[i]; }
+  return m / 255;
+}
+
+function agentLevel() {
+  if (!agentAn || !agentData) return 0;
+  let sum = 0;
+  for (let i = 0; i < agentData.length; i++) sum += agentData[i];
+  return sum / (agentData.length * 255);
+}
+
+function renderStatus(ml) {
+  let cls = "", word = "ready", pulse = false, micTxt = "";
+  if (!live) {
+    if (srvErr) { cls = "err"; word = "server down"; }
+    else if (srvDegraded) { cls = "warn"; word = "degraded"; pulse = true; }
+    else { cls = "ok"; word = "ready"; }
+  } else {
+    let muted = false;
+    try {
+      const p = room && room.localParticipant
+        ? room.localParticipant.getTrackPublication(LK.Track.Source.Microphone) : null;
+      muted = !!(p && p.isMuted);
+    } catch (e) {}
+    micTxt = muted ? "mic muted" : (micPubOk ? (ml > 0.06 ? "mic active" : "mic on") : "mic off");
+    const ag = agentLevel();
+    if (ag > 0.07) { cls = "speak"; word = "assistant speaking"; pulse = true; }
+    else if (ml > 0.09) { cls = "listen"; word = "listening"; pulse = true; }
+    else { cls = "ok"; word = "live - listening"; }
+  }
+  const key = cls + "|" + (pulse ? 1 : 0) + "|" + word + "|" + micTxt;
+  if (key === stCache) return;
+  stCache = key;
+  $("stdot").className = cls + (pulse ? " pulse" : "");
+  $("stword").textContent = word;
+  $("stmic").textContent = micTxt;
+}
+
+async function fillMicDevices() {
+  const sel = $("micdevice");
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const cur = (() => { try { return localStorage.getItem("micDeviceId") || ""; } catch (e) { return ""; } })();
+    sel.innerHTML = '<option value="">System default</option>';
+    let found = false;
+    devs.forEach((d) => {
+      if (d.kind !== "audioinput") return;
+      const label = d.label || ("microphone " + sel.options.length);
+      addOpt(sel, d.deviceId, label);
+      if (d.deviceId && d.deviceId === cur) found = true;
+    });
+    if (found) sel.value = cur;
+  } catch (e) {
+    console.warn("enumerateDevices failed", e);
+  }
+}
+
+$("micdevice").addEventListener("change", () => {
+  try { localStorage.setItem("micDeviceId", $("micdevice").value || ""); } catch (e) {}
+  toast("Microphone saved - applies to the next call");
+});
+
 const stage = $("stage"), sctx = stage.getContext("2d");
 const micc = $("miccanvas"), mctx = micc.getContext("2d");
 
 function fitCanvas() {
   try {
-    stage.width = Math.max(1, Math.floor(innerWidth * devicePixelRatio));
-    stage.height = Math.max(1, Math.floor(innerHeight * devicePixelRatio));
+    const r = stage.getBoundingClientRect();
+    stage.width = Math.max(1, Math.floor(r.width * devicePixelRatio));
+    stage.height = Math.max(1, Math.floor(r.height * devicePixelRatio));
     micc.width = Math.max(1, Math.floor(micc.clientWidth * devicePixelRatio));
     micc.height = Math.max(1, Math.floor(micc.clientHeight * devicePixelRatio));
   } catch (e) {
@@ -719,6 +845,18 @@ function draw() {
   try {
     if (agentAn && agentData) agentAn.getByteFrequencyData(agentData);
     if (micAn && micData) micAn.getByteFrequencyData(micData);
+    const ml = micLevel();
+    if (live && micPubOk && !micWarned) {
+      if (ml > 0.06) {
+        micSilenceSince = 0;
+      } else if (!micSilenceSince) {
+        micSilenceSince = Date.now();
+      } else if (Date.now() - micSilenceSince > 6000) {
+        micWarned = true;
+        toast("Mic is connected but silent - pick another input device in Settings, or check Windows microphone privacy settings", 5200);
+      }
+    }
+    renderStatus(ml);
     drawOrb();
     drawMic();
   } catch (e) {
@@ -733,12 +871,7 @@ function drawOrb() {
   const cx = w / 2;
   const cy = h / 2;
   const base = Math.min(w, h) * 0.13;
-  let level = 0;
-  if (agentAn && agentData) {
-    let sum = 0;
-    for (let i = 0; i < agentData.length; i++) sum += agentData[i];
-    level = sum / (agentData.length * 255);
-  }
+  const level = agentLevel();
   const idle = live ? 0.12 : 0.05;
   const breath = 1 + Math.sin(phase * 1.6) * (live ? 0.05 : 0.03);
   const r = base * (0.9 + level * 1.6) * breath;
