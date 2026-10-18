@@ -84,6 +84,21 @@
     transition: transform .24s ease;
   }
   #side.hidden { transform: translateX(-102%); }
+  #sidetab {
+    position: fixed; top: 50%; left: 0; transform: translateY(-50%);
+    width: 40px; height: 64px; z-index: 26;
+    border: 1px solid var(--line); border-left: none;
+    border-radius: 0 12px 12px 0;
+    background: var(--panel); color: var(--dim); font-size: 19px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(8px);
+    transition: left .24s ease, color .18s ease, border-color .18s ease;
+  }
+  #sidetab:hover { color: var(--fg); border-color: var(--accent); }
+  #sidetab .ic-close { display: none; font-size: 23px; line-height: 1; }
+  #sidetab.open .ic-open { display: none; }
+  #sidetab.open .ic-close { display: block; }
+  body.panel-open #sidetab { left: min(340px, 42vw); }
   #sidehead {
     padding: 12px 16px; border-bottom: 1px solid var(--line);
     font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
@@ -111,7 +126,7 @@
   @media (max-width: 860px) {
     #side { width: min(86vw, 340px); }
     #micdock { width: min(420px, 80vw); }
-    body.panel-open #status { left: 14px; }
+    body.panel-open #sidetab { left: min(86vw, 340px); }
   }
 
   .modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
@@ -187,6 +202,10 @@
     transition: left .24s ease;
   }
   body.panel-open #status { left: calc(min(340px, 42vw) + 26px); }
+  /* must come after the wide rule above, or the wide rule wins on small screens */
+  @media (max-width: 860px) {
+    body.panel-open #status { left: 14px; }
+  }
   #strow { display: flex; align-items: center; gap: 9px; }
   #stdot {
     width: 11px; height: 11px; border-radius: 50%; background: #64748b; flex: none;
@@ -236,8 +255,11 @@
     </form>
   </div>
 
+  <button id="sidetab" type="button" title="Show / hide conversation" aria-expanded="false">
+    <span class="ic-open">&#128172;</span><span class="ic-close">&times;</span>
+  </button>
+
   <div class="corner">
-    <button class="iconbtn" id="chaticon" title="Show / hide conversation">&#128172;</button>
     <button class="iconbtn" id="histbtn" title="Chat history">&#128337;</button>
     <button class="iconbtn" id="gearbtn" title="Settings">&#9881;</button>
   </div>
@@ -659,9 +681,13 @@ let sideOpen = innerWidth >= 1100;
 function applySide() {
   sideEl.classList.toggle("hidden", !sideOpen);
   document.body.classList.toggle("panel-open", sideOpen);
+  const tab = $("sidetab");
+  tab.classList.toggle("open", sideOpen);
+  tab.title = sideOpen ? "Hide conversation" : "Show conversation";
+  tab.setAttribute("aria-expanded", String(sideOpen));
 }
 
-$("chaticon").addEventListener("click", () => {
+$("sidetab").addEventListener("click", () => {
   sideOpen = !sideOpen;
   applySide();
   if (sideOpen) $("transcript").scrollTop = $("transcript").scrollHeight;

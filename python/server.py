@@ -48,6 +48,15 @@ def log(msg: str) -> None:
     print(f"[  sup] {msg}", flush=True)
 
 
+def _harden_streams() -> None:
+    """Never crash the supervisor because the console can't encode a glyph."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except Exception:
+            pass
+
+
 def env_dict() -> dict:
     cfg = {}
     try:
@@ -155,6 +164,12 @@ def assign_job(proc) -> None:
 
 def spawn(name: str, argv: list) -> None:
     log(f"[{name}] starting: {' '.join(str(a) for a in argv)}")
+    # Force UTF-8 stdio on the pipes: on Windows the default for a Python
+    # child is the legacy codepage (cp1252 etc.), so Piper's IPA phoneme
+    # logs reached this reader as invalid bytes and printed as '<EFBFBD>'.
+    child_env = dict(os.environ)
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    child_env.setdefault("PYTHONUTF8", "1")
     try:
         proc = subprocess.Popen(
             [str(a) for a in argv],
@@ -165,6 +180,7 @@ def spawn(name: str, argv: list) -> None:
             errors="replace",
             bufsize=1,
             cwd=str(ROOT),
+            env=child_env,
         )
     except FileNotFoundError:
         log(f"[{name}] FAILED: executable not found: {argv[0]}")
@@ -594,6 +610,7 @@ def open_browser_when_ready() -> None:
 
 def main() -> None:
     global JOB, _K32
+    _harden_streams()
     if os.name == "nt" and not VENV_PY.exists():
         raise SystemExit("[  sup] .venv missing - run setup.bat first")
     if not AGENT_SCRIPT.is_file():

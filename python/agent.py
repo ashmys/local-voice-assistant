@@ -43,10 +43,39 @@ from livekit.agents import (  # noqa: E402
     Agent,
     AgentServer,
     AgentSession,
-    RoomOutputOptions,
     stt as lk_stt,
 )
 from livekit.plugins import openai, silero  # noqa: E402
+
+try:  # livekit-agents >= 1.8: RoomOptions replaces RoomInput/RoomOutputOptions
+    from livekit.agents import RoomOptions as _RoomOptions
+except ImportError:  # older releases still ship the split options
+    _RoomOptions = None
+
+
+class _QuietDeprecations(logging.Filter):
+    """Hide known one-time deprecation notices from livekit.agents.
+
+    The one-window supervisor deliberately launches `agent.py dev` for
+    automatic room dispatch, so these warnings do not apply to this project.
+    They are pure console noise for local users - real warnings still pass.
+    """
+
+    _MSGS = (
+        "dev mode is deprecated",
+        "in-process auto-reload has been removed",
+        "RoomInputOptions and RoomOutputOptions are deprecated",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        return not any(m in msg for m in self._MSGS)
+
+
+logging.getLogger("livekit.agents").addFilter(_QuietDeprecations())
 
 INSTRUCTIONS = (
     "You are a helpful AI voice assistant. Keep replies short and natural for "
@@ -434,13 +463,24 @@ async def voice_agent(ctx: agents.JobContext) -> None:
             },
         )
 
-        await session.start(
-            room=ctx.room,
-            agent=Assistant(),
-            room_output_options=RoomOutputOptions(
-                audio_enabled=True, transcription_enabled=False
-            ),
-        )
+        if _RoomOptions is not None:
+            await session.start(
+                room=ctx.room,
+                agent=Assistant(),
+                room_options=_RoomOptions(
+                    audio_enabled=True, transcription_enabled=False
+                ),
+            )
+        else:
+            from livekit.agents import RoomOutputOptions
+
+            await session.start(
+                room=ctx.room,
+                agent=Assistant(),
+                room_output_options=RoomOutputOptions(
+                    audio_enabled=True, transcription_enabled=False
+                ),
+            )
         logger.info("Session started for room %s", ctx.room.name)
 
         def on_user_transcript(ev) -> None:
