@@ -159,6 +159,9 @@ def write_livekit_yaml() -> None:
 
 def download_resumable(url: str, dest: Path, desc: str, min_bytes: int = 100,
                        attempts: int = 4) -> None:
+    if DRY_RUN:
+        print(f"  (dry-run) would download {desc} -> {dest.name}")
+        return
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
     got = part.stat().st_size if part.exists() else 0
@@ -278,6 +281,7 @@ def step_livekit() -> None:
         z.extractall(BIN_DIR)
     zpath.unlink(missing_ok=True)
     print(f"  extracted -> {exe}")
+
 
 
 def step_config() -> None:
