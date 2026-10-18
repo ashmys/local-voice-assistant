@@ -1,5 +1,9 @@
 # Local Voice Assistant Kit
 
+<p align="center">
+   <img src="screenshots/screenshot1.png" alt="screenshot1" width="750">
+</p>
+
 A realtime voice assistant you run **yourself**. Talk to it out loud, it listens, thinks, and answers with a natural voice — all in one window. Speech-to-text and text-to-speech always run locally on your machine. For the "brain" you choose: keep it 100% local, or plug in any OpenAI-compatible cloud API. Runs on **Windows 11/10, Linux, and macOS**.
 
 ```
