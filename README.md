@@ -35,16 +35,16 @@ browser mic -> LiveKit -> Silero VAD -> faster-whisper STT
    - tests the GPU and pre-downloads the Whisper model.
    Downloads are resumable: if one stalls, press Ctrl+C and run `setup.bat` again - it continues where it stopped.
 3. Start textgen with the API enabled (`--api --api-key sk-1234` in `user_data\CMD_FLAGS.txt`) and load your model.
-4. Run `start.bat`. One window supervises everything.
-5. Open `http://127.0.0.1:8090`, press **START**, and talk.
+4. Run `start.bat`. One window supervises everything and opens `http://127.0.0.1:8090` in your browser automatically (set `AUTO_OPEN=0` in `user_data/.env.local` to disable).
+5. Press the **green call button** and talk. Press it again (red) to hang up.
 
 ## Using the web page
 
-- **Center orb** reacts to the assistant's voice; the **bottom bar** shows your mic.
-- **Top-left status row** shows the full condition: livekit, textgen, GPU, local STT/TTS model counts, and the agent worker - refreshed every 15 s.
-- **START runs a preflight check first**: LiveKit reachable, mic available, library present; warnings appear for textgen down or missing models. Failures are shown as a clear message instead of a silent stall.
-- **Chat bubble icon** (bottom right) opens the optional text chat: your typed words are answered through the same LLM and appear in the transcript.
-- **Gear icon** (top right) opens every setting: LiveKit URL/key/secret, textgen URL/key/model, streaming mode, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
+- **Voice-call layout**: your messages and the assistant's answers appear in the **left panel** (typed input optional), the AI orb sits in the **center**, and the **round call button** at the center bottom starts/stops the call like a phone.
+- **Center orb** reacts to the assistant's voice; the **bar above the call button** shows your mic.
+- **Top-left status row** shows the full condition: livekit, textgen, GPU, local STT/TTS model counts, agent worker, and agent dispatch - refreshed every 15 s.
+- **Call button runs a preflight check first**: LiveKit reachable, mic available, library present; warnings appear for textgen down or missing models. Failures are shown as a clear message instead of a silent stall.
+- **Gear icon** (top right) opens an almost-fullscreen settings window with tabs (Connection / Speech / Behavior / Advanced) covering every key: LiveKit URL/key/secret, textgen URL/key/model, streaming mode, Whisper model/device/compute/language/beam/temperature/filters, Piper voice, TTS speed, turn-taking timing, echo guard, log level. Saving applies to the **next** conversation.
 - **Clock icon** (top right) browses past conversations, stored in `user_data/chat/`.
 
 ## Everyday use
@@ -66,6 +66,7 @@ browser mic -> LiveKit -> Silero VAD -> faster-whisper STT
 | Text replies but no sound | Check the Piper voice exists in `user_data/models/piper/` (`<name>.onnx` + `<name>.onnx.json`). |
 | `large-v3-turbo` or `large-v3` feels slow | On a 6 GB GPU use `small` or `medium` - the big models trade speed for accuracy. |
 | Nothing responds at all | In the `start.bat` window: `textgen API: up` and `LiveKit -> UP` must both show. Fix whichever is down first. |
+| Agent registers but never joins (log: `failed to send job request`) | `user_data/livekit.yaml` must contain the `room_config: agents: - agent_name: voice-agent` block. Re-run `setup.bat` or paste it in, then restart `start.bat`. The top-left `dispatch` chip must show `ok`. |
 
 ## Ports
 

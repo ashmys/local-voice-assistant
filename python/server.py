@@ -434,6 +434,14 @@ async def api_models_tts(_request: web.Request) -> web.Response:
     return web.json_response(list_tts_models())
 
 
+def dispatch_configured() -> bool:
+    try:
+        text = LIVEKIT_YAML.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return f"agent_name: {AGENT_NAME}" in text
+
+
 def count_local_models() -> dict:
     stt = 0
     base = whisper_dir()
@@ -463,6 +471,7 @@ async def health(_request: web.Request) -> web.Response:
         "models": count_local_models(),
         "children": kids,
         "venv": VENV_PY.exists(),
+        "dispatch": dispatch_configured(),
         "lib_file": {"exists": lib_ok},
     })
 
@@ -532,6 +541,25 @@ async def log_and_nocache(request: web.Request, handler):
     return resp
 
 
+def open_browser_when_ready() -> None:
+    url = f"http://{HOST}:{PORT}/"
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if _tcp_alive(HOST, PORT, timeout=0.5):
+            break
+        time.sleep(0.25)
+    try:
+        if os.name == "nt":
+            os.startfile(url)
+        else:
+            import webbrowser
+
+            webbrowser.open(url)
+        log(f"opened {url} in your browser (set AUTO_OPEN=0 to disable)")
+    except Exception as exc:
+        log(f"could not auto-open browser ({exc}) - open {url} manually")
+
+
 def main() -> None:
     global JOB, _K32
     if os.name == "nt" and not VENV_PY.exists():
@@ -557,6 +585,16 @@ def main() -> None:
         banner()
     except Exception as exc:
         log(f"startup banner check failed ({exc}) - continuing")
+
+    if not dispatch_configured():
+        log("WARNING: user_data/livekit.yaml has no room_config agent dispatch")
+        log("WARNING: the agent may never receive jobs - re-run setup.bat or add:")
+        log("WARNING:   room_config:")
+        log("WARNING:     agents:")
+        log("WARNING:       - agent_name: voice-agent")
+    if setting("AUTO_OPEN", "1") == "1":
+        threading.Thread(target=open_browser_when_ready, daemon=True,
+                         name="browser-open").start()
 
     app = web.Application(middlewares=[log_and_nocache])
     app.router.add_get("/", index)

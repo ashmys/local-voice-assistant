@@ -149,6 +149,11 @@ def write_livekit_yaml() -> None:
         "  port_range_end: 50100\n"
         "  use_external_ip: false\n"
         "\n"
+        "# Every room gets the voice agent automatically (no cloud, no explicit token dispatch)\n"
+        "room_config:\n"
+        "  agents:\n"
+        "    - agent_name: voice-agent\n"
+        "\n"
         "# Local development keys (must match .env.local)\n"
         "keys:\n"
         "  devkey: voicelocal-secret-1234567890abcdef\n",

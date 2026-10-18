@@ -18,6 +18,7 @@
     --bg: #0a0c12; --fg: #e8eaf2; --dim: #8b93a7;
     --accent: #6ea8ff; --accent2: #9b7bff; --ok: #4ade80; --warn: #fbbf24;
     --panel: rgba(16, 19, 28, 0.92); --line: rgba(255,255,255,0.08);
+    --shift: 0px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
@@ -41,8 +42,9 @@
   .iconbtn.active { color: var(--accent); border-color: var(--accent); }
 
   #center {
-    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
-    text-align: center; z-index: 5; pointer-events: none;
+    position: fixed; left: calc(50% + var(--shift)); top: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center; z-index: 5; pointer-events: none; width: max-content;
   }
   #state {
     font-size: 15px; letter-spacing: .14em; text-transform: uppercase;
@@ -51,36 +53,48 @@
   #state.speaking { color: var(--accent); }
   #hint { margin-top: 8px; font-size: 12.5px; color: var(--dim); opacity: .7; }
 
-  #startbtn {
-    position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%);
-    padding: 13px 40px; font-size: 16px; letter-spacing: .06em;
-    border-radius: 999px; border: 1px solid var(--accent);
-    background: linear-gradient(135deg, rgba(110,168,255,.16), rgba(155,123,255,.16));
-    color: var(--fg); cursor: pointer; z-index: 20; transition: all .2s ease;
+  #callbtn {
+    position: fixed; left: calc(50% + var(--shift)); bottom: 34px;
+    transform: translateX(-50%);
+    width: 78px; height: 78px; border-radius: 50%; border: none; cursor: pointer;
+    background: linear-gradient(160deg, #34d399, #0ea5e9 130%); color: #04291a;
+    font-size: 30px; z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 12px 36px rgba(52,211,153,.35); transition: all .2s ease;
   }
-  #startbtn:hover { box-shadow: 0 0 32px rgba(110,168,255,.35); transform: translateX(-50%) scale(1.03); }
-  #startbtn.live { border-color: var(--warn); color: var(--warn);
-    background: linear-gradient(135deg, rgba(251,191,36,.12), rgba(251,191,36,.05)); }
+  #callbtn:hover { transform: translateX(-50%) scale(1.06); }
+  #callbtn.live {
+    background: linear-gradient(160deg, #f87171, #b91c1c 130%); color: #fff;
+    box-shadow: 0 12px 36px rgba(239,68,68,.4);
+  }
+  #callbtn:disabled { opacity: .55; cursor: wait; }
 
   #micdock {
-    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
-    width: min(560px, 80vw); z-index: 10; text-align: center;
+    position: fixed; left: calc(50% + var(--shift)); bottom: 128px;
+    transform: translateX(-50%);
+    width: min(480px, 60vw); z-index: 10; text-align: center;
   }
-  #miccanvas { width: 100%; height: 44px; opacity: .9; }
-  #miclabel { font-size: 11px; letter-spacing: .2em; color: var(--dim); margin-top: 2px; opacity: .6; }
+  #miccanvas { width: 100%; height: 40px; opacity: .9; }
+  #miclabel { font-size: 10px; letter-spacing: .2em; color: var(--dim); margin-top: 2px; opacity: .55; }
 
-  #chatfab {
-    position: fixed; right: 16px; bottom: 16px; z-index: 30;
-  }
-  #chatpanel {
-    position: fixed; right: 16px; bottom: 72px; width: min(400px, 92vw);
-    max-height: min(560px, 72vh); display: none; flex-direction: column;
+  #side {
+    position: fixed; left: 14px; top: 68px; bottom: 132px; width: min(330px, 40vw);
+    display: flex; flex-direction: column;
     background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
-    z-index: 29; overflow: hidden; backdrop-filter: blur(12px);
+    z-index: 25; overflow: hidden; backdrop-filter: blur(12px);
+    transition: transform .22s ease, opacity .22s ease;
   }
-  #chatpanel.open { display: flex; }
+  #side.hidden { transform: translateX(-26px); opacity: 0; pointer-events: none; }
+  #sidehead {
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #sidehead .clearlog { background: none; border: none; color: var(--dim); font-size: 11px;
+    cursor: pointer; letter-spacing: .06em; }
+  #sidehead .clearlog:hover { color: var(--warn); }
   #transcript { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
-  .msg { max-width: 86%; padding: 8px 12px; border-radius: 14px; font-size: 14px;
+  .msg { max-width: 88%; padding: 8px 12px; border-radius: 14px; font-size: 14px;
     line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
   .msg.you { align-self: flex-end; background: rgba(110,168,255,.16); border: 1px solid rgba(110,168,255,.25); }
   .msg.bot { align-self: flex-start; background: rgba(155,123,255,.14); border: 1px solid rgba(155,123,255,.24); }
@@ -95,25 +109,36 @@
     background: var(--accent); border: none; color: #08101f; font-weight: 600;
     border-radius: 10px; padding: 0 16px; cursor: pointer; font-size: 14px;
   }
-
-  .sheet {
-    position: fixed; top: 0; right: -460px; width: min(440px, 96vw); height: 100%;
-    background: var(--panel); border-left: 1px solid var(--line); z-index: 40;
-    transition: right .25s ease; display: flex; flex-direction: column;
-    backdrop-filter: blur(14px);
+  @media (max-width: 860px) {
+    #side { width: auto; left: 10px; right: 10px; top: 64px; bottom: 140px; }
+    #micdock { width: min(420px, 80vw); }
   }
-  .sheet.open { right: 0; }
-  .sheethead { display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 18px; border-bottom: 1px solid var(--line); }
-  .sheethead h2 { font-size: 16px; font-weight: 600; letter-spacing: .04em; }
-  .closebtn { background: none; border: none; color: var(--dim); font-size: 22px; cursor: pointer; }
+
+  .modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    z-index: 60; background: rgba(3,5,10,.55); }
+  .modal.open { display: flex; }
+  .modalbox { width: min(96vw, 1060px); height: min(92vh, 780px);
+    background: #10131c; border: 1px solid var(--line); border-radius: 18px;
+    display: flex; flex-direction: column; overflow: hidden;
+    box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+  .modalhead { display: flex; align-items: center; gap: 12px; padding: 14px 18px;
+    border-bottom: 1px solid var(--line); }
+  .modalhead h2 { font-size: 16px; font-weight: 600; letter-spacing: .03em; }
+  .tabbar { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+  .tab { background: none; border: 1px solid transparent; color: var(--dim);
+    font-size: 13px; padding: 7px 14px; border-radius: 10px; cursor: pointer; }
+  .tab:hover { color: var(--fg); }
+  .tab.active { color: var(--fg); border-color: var(--line); background: rgba(255,255,255,.05); }
+  .modalbody { flex: 1; overflow-y: auto; padding: 18px 22px; }
+  .tabpage { display: none; max-width: 780px; }
+  .tabpage.active { display: block; }
+  .closebtn { background: none; border: none; color: var(--dim); font-size: 24px; cursor: pointer; }
   .closebtn:hover { color: var(--fg); }
-  .sheetbody { flex: 1; overflow-y: auto; padding: 16px 18px; }
 
   .sect { margin: 20px 0 10px; font-size: 11px; letter-spacing: .14em;
     text-transform: uppercase; color: var(--accent);
     border-bottom: 1px solid var(--line); padding-bottom: 6px; }
-  .sheetbody .sect:first-child { margin-top: 0; }
+  .tabpage .sect:first-child { margin-top: 0; }
   .field { margin-bottom: 14px; }
   .field label { display: block; font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
     color: var(--dim); margin-bottom: 5px; }
@@ -150,7 +175,7 @@
   .backlink { color: var(--accent); font-size: 13px; cursor: pointer; margin-bottom: 12px; display: inline-block; }
   .empty { color: var(--dim); text-align: center; margin-top: 40px; font-size: 13.5px; }
 
-  #toast { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
+  #toast { position: fixed; bottom: 130px; left: calc(50% + var(--shift)); transform: translateX(-50%);
     background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
     padding: 10px 18px; font-size: 13px; z-index: 50; opacity: 0; transition: opacity .3s;
     pointer-events: none; max-width: min(560px, 90vw); text-align: center; }
@@ -165,24 +190,18 @@
 
   <div id="center">
     <div id="state">ready</div>
-    <div id="hint">press start, then just talk</div>
+    <div id="hint">press the green button, then just talk</div>
   </div>
 
-  <button id="startbtn">START</button>
+  <button id="callbtn" title="Start / stop the call">&#9742;</button>
 
   <div id="micdock">
     <canvas id="miccanvas"></canvas>
     <div id="miclabel">MIC</div>
   </div>
 
-  <div class="corner">
-    <button class="iconbtn" id="histbtn" title="Chat history">&#128337;</button>
-    <button class="iconbtn" id="gearbtn" title="Settings">&#9881;</button>
-  </div>
-
-  <button class="iconbtn" id="chatfab" title="Chat">&#128172;</button>
-
-  <div id="chatpanel">
+  <div id="side" class="hidden">
+    <div id="sidehead"><span>Conversation</span><button class="clearlog" id="clearlog" type="button">clear</button></div>
     <div id="transcript"></div>
     <form id="chatform">
       <input id="chatinput" type="text" placeholder="Type a message (optional)..." autocomplete="off">
@@ -190,96 +209,124 @@
     </form>
   </div>
 
-  <div class="sheet" id="settingsheet">
-    <div class="sheethead"><h2>Settings</h2><button class="closebtn" id="closegear">&times;</button></div>
-    <div class="sheetbody">
-      <div class="sect">Connection</div>
-      <div class="field"><label>LiveKit URL</label><input type="text" id="cfg-LIVEKIT_URL" placeholder="ws://127.0.0.1:7880"></div>
-      <div class="grid2">
-        <div class="field"><label>LiveKit API key</label><input type="text" id="cfg-LIVEKIT_API_KEY"></div>
-        <div class="field"><label>LiveKit API secret</label><input type="password" id="cfg-LIVEKIT_API_SECRET"></div>
-      </div>
+  <div class="corner">
+    <button class="iconbtn" id="chaticon" title="Show / hide conversation">&#128172;</button>
+    <button class="iconbtn" id="histbtn" title="Chat history">&#128337;</button>
+    <button class="iconbtn" id="gearbtn" title="Settings">&#9881;</button>
+  </div>
 
-      <div class="sect">Language model</div>
-      <div class="field"><label>textgen API URL</label><input type="text" id="cfg-TEXTGEN_BASE_URL"></div>
-      <div class="field"><label>textgen API key</label><input type="password" id="cfg-TEXTGEN_API_KEY"></div>
-      <div class="field"><label>Model name</label><input type="text" id="cfg-TEXTGEN_MODEL"></div>
-      <div class="field"><label>Token streaming</label>
-        <select id="cfg-LLM_STREAMING"><option value="0">Full reply first (stable)</option><option value="1">Stream tokens (live text)</option></select>
+  <div class="modal" id="settingsheet">
+    <div class="modalbox">
+      <div class="modalhead">
+        <h2>Settings</h2>
+        <div class="tabbar">
+          <button class="tab active" data-tab="tabconn" type="button">Connection</button>
+          <button class="tab" data-tab="tabspeech" type="button">Speech</button>
+          <button class="tab" data-tab="tabbehav" type="button">Behavior</button>
+          <button class="tab" data-tab="tabadv" type="button">Advanced</button>
+        </div>
+        <button class="closebtn" id="closegear">&times;</button>
       </div>
+      <div class="modalbody">
+        <div class="tabpage active" id="tabconn">
+          <div class="sect">LiveKit</div>
+          <div class="field"><label>LiveKit URL</label><input type="text" id="cfg-LIVEKIT_URL" placeholder="ws://127.0.0.1:7880"></div>
+          <div class="grid2">
+            <div class="field"><label>LiveKit API key</label><input type="text" id="cfg-LIVEKIT_API_KEY"></div>
+            <div class="field"><label>LiveKit API secret</label><input type="password" id="cfg-LIVEKIT_API_SECRET"></div>
+          </div>
+          <div class="sect">Language model</div>
+          <div class="field"><label>textgen API URL</label><input type="text" id="cfg-TEXTGEN_BASE_URL"></div>
+          <div class="grid2">
+            <div class="field"><label>textgen API key</label><input type="password" id="cfg-TEXTGEN_API_KEY"></div>
+            <div class="field"><label>Model name</label><input type="text" id="cfg-TEXTGEN_MODEL"></div>
+          </div>
+          <div class="field"><label>Token streaming</label>
+            <select id="cfg-LLM_STREAMING"><option value="0">Full reply first (stable)</option><option value="1">Stream tokens (live text)</option></select>
+          </div>
+        </div>
 
-      <div class="sect">Speech-to-text</div>
-      <div class="field"><label>Whisper model</label><select id="cfg-WHISPER_MODEL"></select></div>
-      <div class="grid2">
-        <div class="field"><label>Device</label>
-          <select id="cfg-WHISPER_DEVICE"><option value="auto">Auto</option><option value="cuda">GPU (CUDA)</option><option value="cpu">CPU</option></select>
+        <div class="tabpage" id="tabspeech">
+          <div class="sect">Speech-to-text</div>
+          <div class="field"><label>Whisper model</label><select id="cfg-WHISPER_MODEL"></select></div>
+          <div class="grid2">
+            <div class="field"><label>Device</label>
+              <select id="cfg-WHISPER_DEVICE"><option value="auto">Auto</option><option value="cuda">GPU (CUDA)</option><option value="cpu">CPU</option></select>
+            </div>
+            <div class="field"><label>Compute</label>
+              <select id="cfg-WHISPER_COMPUTE"><option value="auto">Auto</option><option value="float16">float16</option><option value="int8">int8</option></select>
+            </div>
+          </div>
+          <div class="grid2">
+            <div class="field"><label>Language (auto = detect)</label>
+              <select id="cfg-WHISPER_LANGUAGE">
+                <option value="auto">auto</option><option value="en">en</option><option value="id">id</option>
+                <option value="ja">ja</option><option value="zh">zh</option><option value="ko">ko</option>
+                <option value="es">es</option><option value="fr">fr</option><option value="de">de</option>
+                <option value="pt">pt</option><option value="ru">ru</option><option value="ar">ar</option>
+                <option value="hi">hi</option>
+              </select>
+            </div>
+            <div class="field"><label>Beam width</label>
+              <select id="cfg-WHISPER_BEAM"><option value="1">1 (fast)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 (slow)</option></select>
+            </div>
+          </div>
+          <div class="grid3">
+            <div class="field"><label>Temperature</label><input type="text" id="cfg-WHISPER_TEMPERATURE" inputmode="decimal" placeholder="0.0"></div>
+            <div class="field"><label>Min logprob</label><input type="text" id="cfg-WHISPER_MIN_LOGPROB" inputmode="decimal" placeholder="-1.0"></div>
+            <div class="field"><label>Max compratio</label><input type="text" id="cfg-WHISPER_MAX_COMPRATIO" inputmode="decimal" placeholder="2.4"></div>
+          </div>
+          <div class="field"><label>VAD filter (skips silence)</label>
+            <select id="cfg-WHISPER_VAD_FILTER"><option value="0">Off</option><option value="1">On</option></select>
+          </div>
+          <div class="sect">Text-to-speech</div>
+          <div class="field"><label>Piper voice</label><select id="cfg-TTS_VOICE"></select></div>
+          <div class="field"><label>TTS speed <span class="rangeval" id="val-TTS_SPEED"></span></label>
+            <input type="range" id="cfg-TTS_SPEED" min="0.7" max="1.6" step="0.05">
+          </div>
         </div>
-        <div class="field"><label>Compute</label>
-          <select id="cfg-WHISPER_COMPUTE"><option value="auto">Auto</option><option value="float16">float16</option><option value="int8">int8</option></select>
-        </div>
-      </div>
-      <div class="grid2">
-        <div class="field"><label>Language (auto = detect)</label>
-          <select id="cfg-WHISPER_LANGUAGE">
-            <option value="auto">auto</option><option value="en">en</option><option value="id">id</option>
-            <option value="ja">ja</option><option value="zh">zh</option><option value="ko">ko</option>
-            <option value="es">es</option><option value="fr">fr</option><option value="de">de</option>
-            <option value="pt">pt</option><option value="ru">ru</option><option value="ar">ar</option>
-            <option value="hi">hi</option>
-          </select>
-        </div>
-        <div class="field"><label>Beam width</label>
-          <select id="cfg-WHISPER_BEAM"><option value="1">1 (fast)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 (slow)</option></select>
-        </div>
-      </div>
-      <div class="grid3">
-        <div class="field"><label>Temperature</label><input type="text" id="cfg-WHISPER_TEMPERATURE" inputmode="decimal" placeholder="0.0"></div>
-        <div class="field"><label>Min logprob</label><input type="text" id="cfg-WHISPER_MIN_LOGPROB" inputmode="decimal" placeholder="-1.0"></div>
-        <div class="field"><label>Max compratio</label><input type="text" id="cfg-WHISPER_MAX_COMPRATIO" inputmode="decimal" placeholder="2.4"></div>
-      </div>
-      <div class="field"><label>VAD filter (skips silence)</label>
-        <select id="cfg-WHISPER_VAD_FILTER"><option value="0">Off</option><option value="1">On</option></select>
-      </div>
 
-      <div class="sect">Text-to-speech</div>
-      <div class="field"><label>Piper voice</label><select id="cfg-TTS_VOICE"></select></div>
-      <div class="field"><label>TTS speed <span class="rangeval" id="val-TTS_SPEED"></span></label>
-        <input type="range" id="cfg-TTS_SPEED" min="0.7" max="1.6" step="0.05">
-      </div>
-
-      <div class="sect">Turn taking and echo</div>
-      <div class="field"><label>End-of-sentence pause (s) <span class="rangeval" id="val-ENDPOINTING_DELAY"></span></label>
-        <input type="range" id="cfg-ENDPOINTING_DELAY" min="0.3" max="2" step="0.05">
-      </div>
-      <div class="grid2">
-        <div class="field"><label>Min silence (s) <span class="rangeval" id="val-VAD_MIN_SILENCE"></span></label>
-          <input type="range" id="cfg-VAD_MIN_SILENCE" min="0.2" max="1.5" step="0.05">
+        <div class="tabpage" id="tabbehav">
+          <div class="sect">Turn taking</div>
+          <div class="field"><label>End-of-sentence pause (s) <span class="rangeval" id="val-ENDPOINTING_DELAY"></span></label>
+            <input type="range" id="cfg-ENDPOINTING_DELAY" min="0.3" max="2" step="0.05">
+          </div>
+          <div class="grid2">
+            <div class="field"><label>Min silence (s) <span class="rangeval" id="val-VAD_MIN_SILENCE"></span></label>
+              <input type="range" id="cfg-VAD_MIN_SILENCE" min="0.2" max="1.5" step="0.05">
+            </div>
+            <div class="field"><label>VAD threshold <span class="rangeval" id="val-VAD_ACTIVATION_THRESHOLD"></span></label>
+              <input type="range" id="cfg-VAD_ACTIVATION_THRESHOLD" min="0.2" max="0.8" step="0.05">
+            </div>
+          </div>
+          <div class="sect">Echo guard</div>
+          <div class="field"><label>Echo guard</label>
+            <select id="cfg-ECHO_GUARD"><option value="1">On (drops mic echo of the assistant)</option><option value="0">Off</option></select>
+          </div>
+          <div class="field"><label>Echo guard tail (s) <span class="rangeval" id="val-ECHO_GUARD_TAIL"></span></label>
+            <input type="range" id="cfg-ECHO_GUARD_TAIL" min="0" max="3" step="0.1">
+          </div>
         </div>
-        <div class="field"><label>VAD threshold <span class="rangeval" id="val-VAD_ACTIVATION_THRESHOLD"></span></label>
-          <input type="range" id="cfg-VAD_ACTIVATION_THRESHOLD" min="0.2" max="0.8" step="0.05">
+
+        <div class="tabpage" id="tabadv">
+          <div class="sect">Advanced</div>
+          <div class="field"><label>Log level (needs agent restart)</label>
+            <select id="cfg-LOG_LEVEL"><option value="DEBUG">DEBUG</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select>
+          </div>
         </div>
       </div>
-      <div class="field"><label>Echo guard</label>
-        <select id="cfg-ECHO_GUARD"><option value="1">On (drops mic echo of the assistant)</option><option value="0">Off</option></select>
+      <div class="savebar">
+        <button id="savebtn">Save changes</button>
+        <div id="savemsg"></div>
       </div>
-      <div class="field"><label>Echo guard tail (s) <span class="rangeval" id="val-ECHO_GUARD_TAIL"></span></label>
-        <input type="range" id="cfg-ECHO_GUARD_TAIL" min="0" max="3" step="0.1">
-      </div>
-
-      <div class="sect">Advanced</div>
-      <div class="field"><label>Log level (needs agent restart)</label>
-        <select id="cfg-LOG_LEVEL"><option value="DEBUG">DEBUG</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select>
-      </div>
-    </div>
-    <div class="savebar">
-      <button id="savebtn">Save changes</button>
-      <div id="savemsg"></div>
     </div>
   </div>
 
-  <div class="sheet" id="histsheet">
-    <div class="sheethead"><h2>Chat history</h2><button class="closebtn" id="closehist">&times;</button></div>
-    <div class="sheetbody" id="histbody"></div>
+  <div class="modal" id="histsheet">
+    <div class="modalbox">
+      <div class="modalhead"><h2>Chat history</h2><button class="closebtn" id="closehist">&times;</button></div>
+      <div class="modalbody" id="histbody"></div>
+    </div>
   </div>
 
   <div id="health">checking...</div>
@@ -294,6 +341,7 @@ let bubbles = {};
 let agentCtx = null, micCtx = null, agentAn = null, micAn = null;
 let agentData = null, micData = null, rafId = 0;
 let micStream = null, stateTimer = 0;
+let lastEcho = { text: "", at: 0 };
 
 function toast(text, ms) {
   const t = $("toast");
@@ -339,15 +387,17 @@ async function checkHealth() {
     const ttsN = h.models ? Number(h.models.tts) || 0 : 0;
     const lib = !!(h.lib_file && h.lib_file.exists);
     const ag = !!(h.children && h.children.agent === "up");
+    const dp = h.dispatch !== false;
     const el = $("health");
     el.innerHTML = chip("livekit", lk, lk ? "up" : "down") + " &middot; " +
       chip("textgen", tg, tg ? "up" : "down") + " &middot; " +
       chip("gpu", gpu, gpu ? "yes" : "no") + " &middot; " +
       chip("stt", sttN > 0, sttN) + " &middot; " +
       chip("tts", ttsN > 0, ttsN) + " &middot; " +
-      chip("agent", ag, ag ? "up" : "down") +
+      chip("agent", ag, ag ? "up" : "down") + " &middot; " +
+      chip("dispatch", dp, dp ? "ok" : "none") +
       (lib ? "" : " &middot; lib missing");
-    el.className = lk && tg && ag ? "" : "bad";
+    el.className = lk && tg && ag && dp ? "" : "bad";
   } catch (e) {
     $("health").innerHTML = "server unreachable";
     $("health").className = "bad";
@@ -369,6 +419,7 @@ async function precheck() {
     if (h.venv === false) fatal.push(".venv missing - run setup.bat");
     if (h.lib_file && !h.lib_file.exists) fatal.push("livekit-client.js missing on server - re-extract the kit");
     if (h.livekit && h.livekit.status !== "up") fatal.push("LiveKit server is down - restart start.bat");
+    if (h.dispatch === false) warn.push("no agent dispatch in livekit.yaml - the bot cannot join (see console of start.bat)");
     if (h.children && h.children.agent && h.children.agent !== "up") warn.push("agent worker: " + h.children.agent);
     if (h.textgen && !String(h.textgen.status || "").startsWith("up")) warn.push("textgen API is down - the bot cannot reply until it starts");
     if (h.models) {
@@ -389,6 +440,9 @@ async function precheck() {
 
 function addBubble(who, text, id, final) {
   if (!text || !text.trim()) return null;
+  if (who === "user" && final && id && !id.startsWith("loc")) {
+    if (text === lastEcho.text && Date.now() - lastEcho.at < 8000) return null;
+  }
   const key = id || ("m" + (++msgCounter));
   let div = bubbles[key];
   if (!div) {
@@ -449,7 +503,7 @@ async function connect() {
     toast(micErrorText(e), 4000);
   });
   room.on(LK.RoomEvent.Disconnected, () => {
-    if (live) { live = false; setLiveUi(false); toast("Conversation ended"); }
+    if (live) { live = false; setLiveUi(false); toast("Call ended"); }
   });
   try {
     await room.prepareConnection(d.url, d.token);
@@ -470,8 +524,8 @@ async function connect() {
   }
 }
 
-async function start() {
-  $("startbtn").disabled = true;
+async function startCall() {
+  $("callbtn").disabled = true;
   setState("checking");
   let pc;
   try {
@@ -483,7 +537,7 @@ async function start() {
     setState("blocked");
     toast("Cannot start: " + pc.fatal[0] + (pc.fatal.length > 1 ? " (+" + (pc.fatal.length - 1) + " more, see console)" : ""), 4200);
     console.warn("precheck fatal:", pc.fatal, "warnings:", pc.warn);
-    $("startbtn").disabled = false;
+    $("callbtn").disabled = false;
     return;
   }
   pc.warn.forEach((w) => toast(w, 3600));
@@ -499,10 +553,10 @@ async function start() {
     setState("ready");
     toast("Could not connect: " + (e && e.message ? e.message : e), 4000);
   }
-  $("startbtn").disabled = false;
+  $("callbtn").disabled = false;
 }
 
-async function stop() {
+async function stopCall() {
   live = false;
   clearTimeout(stateTimer);
   try { if (room) await room.disconnect(); } catch (e) { console.warn("disconnect", e); }
@@ -512,14 +566,15 @@ async function stop() {
 }
 
 function setLiveUi(on) {
-  const b = $("startbtn");
-  b.textContent = on ? "STOP" : "START";
+  const b = $("callbtn");
   b.classList.toggle("live", on);
+  b.innerHTML = on ? "&#10006;" : "&#9742;";
+  b.title = on ? "End the call" : "Start the call";
   if (!on) { setState("ready"); }
 }
 
-$("startbtn").addEventListener("click", () => {
-  try { (live ? stop() : start()); } catch (e) { console.error(e); toast("Button error: " + e.message); }
+$("callbtn").addEventListener("click", () => {
+  try { (live ? stopCall() : startCall()); } catch (e) { console.error(e); toast("Button error: " + e.message); }
 });
 
 $("chatform").addEventListener("submit", async (ev) => {
@@ -527,8 +582,11 @@ $("chatform").addEventListener("submit", async (ev) => {
   const input = $("chatinput");
   const text = (input.value || "").trim();
   if (!text) return;
-  if (!room || !live) { toast("Start a conversation first"); return; }
+  if (!room || !live) { toast("Start a call first"); return; }
   input.value = "";
+  const localId = "loc" + (++msgCounter);
+  addBubble("user", text, localId, true);
+  lastEcho = { text, at: Date.now() };
   try {
     await room.localParticipant.publishData(
       new TextEncoder().encode(JSON.stringify({ text })),
@@ -538,27 +596,54 @@ $("chatform").addEventListener("submit", async (ev) => {
   }
 });
 
-$("chatfab").addEventListener("click", () => {
-  const p = $("chatpanel");
-  p.classList.toggle("open");
-  $("chatfab").classList.toggle("active", p.classList.contains("open"));
-  if (p.classList.contains("open")) $("transcript").scrollTop = $("transcript").scrollHeight;
+$("clearlog").addEventListener("click", resetTranscript);
+
+const sideEl = $("side");
+let sideOpen = innerWidth >= 1100;
+
+function applySide() {
+  const wide = innerWidth > 860;
+  sideEl.classList.toggle("hidden", !sideOpen);
+  const shift = sideOpen && wide ? (sideEl.offsetWidth + 14) / 2 : 0;
+  document.documentElement.style.setProperty("--shift", shift.toFixed(0) + "px");
+}
+
+$("chaticon").addEventListener("click", () => {
+  sideOpen = !sideOpen;
+  applySide();
+  if (sideOpen) $("transcript").scrollTop = $("transcript").scrollHeight;
 });
 
+function openModal(id) { $(id).classList.add("open"); }
+function closeModal(id) { $(id).classList.remove("open"); }
+
 $("gearbtn").addEventListener("click", async () => {
-  $("settingsheet").classList.add("open");
+  openModal("settingsheet");
   try {
     await loadConfigForm();
   } catch (e) {
     toast("Could not load settings: " + (e && e.message ? e.message : e));
   }
 });
-$("closegear").addEventListener("click", () => $("settingsheet").classList.remove("open"));
+$("closegear").addEventListener("click", () => closeModal("settingsheet"));
 $("histbtn").addEventListener("click", () => {
-  $("histsheet").classList.add("open");
+  openModal("histsheet");
   try { loadHistoryList(); } catch (e) { toast("History error: " + e.message); }
 });
-$("closehist").addEventListener("click", () => $("histsheet").classList.remove("open"));
+$("closehist").addEventListener("click", () => closeModal("histsheet"));
+document.querySelectorAll(".modal").forEach((m) => {
+  m.addEventListener("click", (ev) => { if (ev.target === m) m.classList.remove("open"); });
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") document.querySelectorAll(".modal.open").forEach((m) => m.classList.remove("open"));
+});
+
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tabpage").forEach((p) => p.classList.toggle("active", p.id === btn.dataset.tab));
+  });
+});
 
 function getCtx(which) {
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -628,9 +713,10 @@ function fitCanvas() {
     console.warn("fitCanvas failed", e);
   }
 }
-addEventListener("resize", () => { try { fitCanvas(); } catch (e) {} });
-addEventListener("orientationchange", () => setTimeout(fitCanvas, 250));
+addEventListener("resize", () => { try { fitCanvas(); applySide(); } catch (e) {} });
+addEventListener("orientationchange", () => setTimeout(() => { fitCanvas(); applySide(); }, 250));
 fitCanvas();
+applySide();
 
 let phase = 0;
 function draw() {
@@ -649,7 +735,9 @@ function draw() {
 function drawOrb() {
   const w = stage.width, h = stage.height;
   sctx.clearRect(0, 0, w, h);
-  const cx = w / 2, cy = h / 2;
+  const shift = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shift")) || 0;
+  const cx = w / 2 + shift * devicePixelRatio;
+  const cy = h / 2;
   const base = Math.min(w, h) * 0.13;
   let level = 0;
   if (agentAn && agentData) {

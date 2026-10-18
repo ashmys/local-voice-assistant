@@ -9,6 +9,11 @@ rtc:
   port_range_end: 50100
   use_external_ip: false
 
+# Every room gets the voice agent automatically (no cloud, no explicit token dispatch)
+room_config:
+  agents:
+    - agent_name: voice-agent
+
 # Local development keys (must match .env.local)
 keys:
   devkey: voicelocal-secret-1234567890abcdef
